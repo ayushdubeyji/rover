@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<script src="js/three.min.js"></script>
+<script src="js/meshopt_decoder.js"></script>
+<script src="js/GLTFLoader.js"></script>
+<style>
+  body { margin:0; padding:0; background: transparent; overflow: hidden; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c" width="280" height="192"></canvas>
+<script>
+async function run() {
+  const canvas = document.getElementById('c');
+  const renderer = new THREE.WebGLRenderer({
+    canvas: canvas,
+    alpha: true,
+    antialias: true,
+    preserveDrawingBuffer: true
+  });
+  renderer.setSize(280, 192);
+  renderer.setPixelRatio(1);
+  if (THREE.sRGBEncoding) renderer.outputEncoding = THREE.sRGBEncoding;
+
+  const scene = new THREE.Scene();
+
+  // Camera placed behind the rover (-X) elevated at 33 degrees looking forward along +X:
+  // Rear chase view: camera is at -X. Battery is in rear facing camera, front electronics point forward.
+  const camera = new THREE.PerspectiveCamera(30, 280/192, 0.1, 50);
+  camera.position.set(-1.48, 0.96, 0.0);
+  camera.lookAt(0, -0.04, 0);
+
+  // Balanced studio lighting (authentic diffuse colors, no cyan tint):
+  const amb = new THREE.AmbientLight(0xffffff, 1.1);
+  scene.add(amb);
+
+  const dir1 = new THREE.DirectionalLight(0xfffdfa, 1.8);
+  dir1.position.set(-2.0, 3.5, 2.0);
+  scene.add(dir1);
+
+  const dir2 = new THREE.DirectionalLight(0xf2f6fa, 1.2);
+  dir2.position.set(2.0, 2.5, -2.0);
+  scene.add(dir2);
+
+  const dir3 = new THREE.DirectionalLight(0xffffff, 0.7);
+  dir3.position.set(-2.5, 1.5, -2.0);
+  scene.add(dir3);
+
+  const loader = new THREE.GLTFLoader();
+  if (typeof MeshoptDecoder !== 'undefined') {
+    loader.setMeshoptDecoder(MeshoptDecoder);
+  }
+
+  loader.load('model.glb', async (gltf) => {
+    const root = gltf.scene;
+    const pivot = new THREE.Group();
+    scene.add(pivot);
+
+    const box = new THREE.Box3().setFromObject(root);
+    const center = box.getCenter(new THREE.Vector3());
+    root.position.sub(center);
+    pivot.add(root);
+
+    // Keep original PBR maps! Do NOT overwrite metalness/roughness with constant values!
+
+    const testAngles = [
+      { name: 'chase_yaw0', yaw: 0 },
+      { name: 'angle_yaw45', yaw: 45 },
+      { name: 'side_yaw90', yaw: 90 },
+      { name: 'front_yaw180', yaw: 180 }
+    ];
+
+    for (const item of testAngles) {
+      pivot.rotation.y = -(item.yaw * Math.PI / 180.0);
+      renderer.render(scene, camera);
+
+      await new Promise((resolve) => {
+        canvas.toBlob(async (blob) => {
+          await fetch('/save_frame?name=' + item.name, { method: 'POST', body: blob });
+          resolve();
+        }, 'image/png');
+      });
+    }
+
+    await fetch('/done', { method: 'POST' });
+  }, undefined, (err) => {
+    console.error('GLTF load error:', err);
+  });
+}
+window.onload = run;
+</script>
+</body>
+</html>

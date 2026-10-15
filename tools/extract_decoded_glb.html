@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<script src="js/three.min.js"></script>
+<script src="js/meshopt_decoder.js"></script>
+<script src="js/GLTFLoader.js"></script>
+</head>
+<body>
+<h1>Extracting Decoded Mesh...</h1>
+<script>
+async function run() {
+  const loader = new THREE.GLTFLoader();
+  if (typeof MeshoptDecoder !== 'undefined') {
+    loader.setMeshoptDecoder(MeshoptDecoder);
+  }
+
+  loader.load('model.glb', async (gltf) => {
+    let targetMesh = null;
+    gltf.scene.traverse((child) => {
+      if (child.isMesh && !targetMesh) {
+        targetMesh = child;
+      }
+    });
+
+    if (!targetMesh) {
+      console.error("No mesh found in GLTF!");
+      return;
+    }
+
+    const geo = targetMesh.geometry;
+    const pos = geo.attributes.position.array;
+    const uv = geo.attributes.uv.array;
+    let idx = geo.index ? geo.index.array : null;
+
+    if (!idx) {
+      // non-indexed, build indices
+      const n = pos.length / 3;
+      idx = new Uint32Array(n);
+      for (let i = 0; i < n; i++) idx[i] = i;
+    } else if (!(idx instanceof Uint32Array)) {
+      idx = new Uint32Array(idx);
+    }
+
+    console.log("Extracted positions:", pos.length, "UVs:", uv.length, "Indices:", idx.length);
+
+    // Send binary buffers
+    await fetch('/save_positions', { method: 'POST', body: pos.buffer });
+    await fetch('/save_uvs', { method: 'POST', body: uv.buffer });
+    await fetch('/save_indices', { method: 'POST', body: idx.buffer });
+
+    // Extract texture image if present
+    if (targetMesh.material && targetMesh.material.map && targetMesh.material.map.image) {
+      const img = targetMesh.material.map.image;
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      canvas.toBlob(async (blob) => {
+        await fetch('/save_texture', { method: 'POST', body: blob });
+        await fetch('/done', { method: 'POST' });
+      }, 'image/jpeg', 0.95);
+    } else {
+      await fetch('/done', { method: 'POST' });
+    }
+  }, undefined, (err) => {
+    console.error("Error loading GLTF:", err);
+  });
+}
+window.onload = run;
+</script>
+</body>
+</html>

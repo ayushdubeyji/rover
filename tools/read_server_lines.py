@@ -1,0 +1,12 @@
+import paramiko
+
+c = paramiko.SSHClient()
+c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+c.connect('192.168.0.111', username='ayush', password='REMOVED', timeout=5)
+
+cmd = """
+sed -n '220,240p' /home/ayush/mecanum_robot/mecanum_host_ws/src/mecanum_robot/mecanum_robot/web_telemetry_server.py
+"""
+stdin, stdout, stderr = c.exec_command(cmd)
+print(stdout.read().decode())
+c.close()

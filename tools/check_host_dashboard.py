@@ -1,0 +1,17 @@
+import paramiko
+
+c = paramiko.SSHClient()
+c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+c.connect('192.168.0.111', username='ayush', password='REMOVED', timeout=5)
+
+cmd = (
+    "head -n 45 /home/ayush/mecanum_robot/mecanum_host_ws/src/mecanum_robot/mecanum_robot/web_telemetry_server.py;"
+    "ss -tulpn | grep -E '8080|8090|8765|9090';"
+    "ps aux | grep -E 'web_telemetry|foxglove|ros' | grep -v grep"
+)
+stdin, stdout, stderr = c.exec_command(cmd)
+print(stdout.read().decode())
+err = stderr.read().decode()
+if err:
+    print("STDERR:", err)
+c.close()

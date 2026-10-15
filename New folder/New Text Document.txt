@@ -1,0 +1,142 @@
+import board
+import busio
+import pwmio
+import time
+import gc
+
+# Memory-safe UART configuration (Listening on GP1)
+uart = busio.UART(tx=board.GP0, rx=board.GP1, baudrate=115200, timeout=0.02, receiver_buffer_size=128)
+
+# Silent Ultrasonic PWM
+pwm_freq = 20000 
+
+# --- POWER CONFIGURATION (For 3.7V Dedicated Motor Rail) ---
+MAX_DUTY = 65535    # 100% Power 
+MIN_DUTY = 22000    # Static friction break threshold for 3.7V
+MAX_ACCEL = 8.0     # Smooth current ramp (prevents battery brownouts)
+# -----------------------------------------------------------
+
+fl_fwd = pwmio.PWMOut(board.GP9, frequency=pwm_freq, duty_cycle=0)
+fl_bck = pwmio.PWMOut(board.GP8, frequency=pwm_freq, duty_cycle=0)
+rl_fwd = pwmio.PWMOut(board.GP11, frequency=pwm_freq, duty_cycle=0)
+rl_bck = pwmio.PWMOut(board.GP10, frequency=pwm_freq, duty_cycle=0)
+fr_fwd = pwmio.PWMOut(board.GP12, frequency=pwm_freq, duty_cycle=0)
+fr_bck = pwmio.PWMOut(board.GP13, frequency=pwm_freq, duty_cycle=0)
+rr_fwd = pwmio.PWMOut(board.GP14, frequency=pwm_freq, duty_cycle=0)
+rr_bck = pwmio.PWMOut(board.GP15, frequency=pwm_freq, duty_cycle=0)
+
+current_speeds = [0.0, 0.0, 0.0, 0.0]
+
+def ramp_speed(current, target):
+    if abs(target - current) < MAX_ACCEL:
+        return target
+    if target > current:
+        return current + MAX_ACCEL
+    return current - MAX_ACCEL
+
+def set_motor(pin_fwd, pin_bck, speed):
+    if abs(speed) < 3.0: 
+        pin_fwd.duty_cycle = 0
+        pin_bck.duty_cycle = 0
+        return
+        
+    duty_range = MAX_DUTY - MIN_DUTY
+    mapped_duty = MIN_DUTY + int(((abs(speed) - 3.0) / 97.0) * duty_range)
+    if mapped_duty > MAX_DUTY: mapped_duty = MAX_DUTY
+        
+    if speed > 0:
+        pin_fwd.duty_cycle = mapped_duty
+        pin_bck.duty_cycle = 0
+    else:
+        pin_fwd.duty_cycle = 0
+        pin_bck.duty_cycle = mapped_duty
+
+def execute_kinematics(x, y, z, master_speed):
+    global current_speeds
+    
+    t_fl = y + x + z
+    t_fr = y - x - z
+    t_rl = y - x + z
+    t_rr = y + x - z
+    
+    max_val = max(abs(t_fl), abs(t_fr), abs(t_rl), abs(t_rr))
+    if max_val > 100.0:
+        t_fl = (t_fl / max_val) * 100.0
+        t_fr = (t_fr / max_val) * 100.0
+        t_rl = (t_rl / max_val) * 100.0
+        t_rr = (t_rr / max_val) * 100.0
+        
+    current_speeds[0] = ramp_speed(current_speeds[0], t_fl * master_speed)
+    current_speeds[1] = ramp_speed(current_speeds[1], t_fr * master_speed)
+    current_speeds[2] = ramp_speed(current_speeds[2], t_rl * master_speed)
+    current_speeds[3] = ramp_speed(current_speeds[3], t_rr * master_speed)
+    
+    set_motor(fl_fwd, fl_bck, current_speeds[0])
+    set_motor(fr_fwd, fr_bck, current_speeds[1])
+    set_motor(rl_fwd, rl_bck, current_speeds[2])
+    set_motor(rr_fwd, rr_bck, current_speeds[3])
+
+uart.reset_input_buffer()
+loop_count = 0
+
+while True:
+    if uart.in_waiting > 0:
+        try:
+            line = uart.readline()
+            if line:
+                text = line.decode('utf-8', 'ignore').strip()
+                
+                if text.startswith('<') and text.endswith('>'):
+                    packet = text[1:-1]
+                    parts = packet.split(',')
+                    
+                    if len(parts) >= 4:
+                        x = float(parts[0]) 
+                        y = float(parts[1]) 
+                        z = float(parts[2]) 
+                        master_speed = float(parts[3]) / 100.0
+                        action = int(parts[4]) if len(parts) == 5 else 0
+                        
+                        if action == 1: # FLEX UP
+                            execute_kinematics(0, 0, 0, 0)
+                            set_motor(fl_bck, fl_fwd, 100)
+                            set_motor(fr_bck, fr_fwd, 100)
+                            set_motor(rl_fwd, rl_bck, 100)
+                            set_motor(rr_fwd, rr_bck, 100)
+                            
+                        elif action == 2: # FLEX DOWN
+                            execute_kinematics(0, 0, 0, 0)
+                            set_motor(fl_fwd, fl_bck, 100)
+                            set_motor(fr_fwd, fr_bck, 100)
+                            set_motor(rl_bck, rl_fwd, 100)
+                            set_motor(rr_bck, rr_fwd, 100)
+                            
+                        elif action == 3: # TORNADO SPIN
+                            execute_kinematics(0, 0, 100, 1.0)
+                            
+                        elif action == 4: # J-TURN
+                            current_speeds = [100.0, 100.0, 100.0, 100.0]
+                            execute_kinematics(0, 100, 0, 1.0)
+                            time.sleep(0.4)
+                            current_speeds = [100.0, -100.0, 100.0, -100.0]
+                            execute_kinematics(0, 0, 100, 1.0)
+                            time.sleep(0.35)
+                            current_speeds = [-100.0, -100.0, -100.0, -100.0]
+                            execute_kinematics(0, -100, 0, 1.0)
+                            time.sleep(0.4)
+                            execute_kinematics(0, 0, 0, 0)
+                            uart.reset_input_buffer()
+                            
+                        else: # STANDARD DRIVING
+                            execute_kinematics(x, y, z, master_speed)
+                            
+        except Exception:
+            uart.reset_input_buffer()
+            pass
+            
+    loop_count += 1
+    if loop_count > 50:
+        gc.collect()
+        loop_count = 0
+        
+    time.sleep(0.005)

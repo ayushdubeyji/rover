@@ -1,0 +1,30 @@
+# Arduino / ESP-IDF build output
+build/
+*.bin
+*.elf
+*.hex
+*.o
+*.d
+*.map
+
+# Editor and IDE
+.vscode/
+.idea/
+*.swp
+*.tmp
+*~
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Dependencies
+node_modules/
+package-lock.json
+
+# Heavy temporary render texture maps (source GLB and decimated OBJ are tracked)
+tools/tex_0.png
+tools/tex_1.png
+tools/tex_2.png
+tools/rover_texture_4k.jpg
+tools/tripo_diffuse.png
