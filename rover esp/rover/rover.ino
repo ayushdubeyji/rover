@@ -191,14 +191,6 @@ void controlTick() {
     float gy[3] = {0, 0, 0};
     float ac[3] = {0, 0, 1};
     bool ok = readRawMPU(gy, ac);
-    if (!ok) {
-      sensors_event_t a, g, temp;
-      if (mpu.getEvent(&a, &g, &temp)) {
-        gy[0] = g.gyro.x; gy[1] = g.gyro.y; gy[2] = g.gyro.z;
-        ac[0] = a.acceleration.x / 9.80665f; ac[1] = a.acceleration.y / 9.80665f; ac[2] = a.acceleration.z / 9.80665f;
-        ok = true;
-      }
-    }
     if (ok) {
       lastAcc[0] = ac[0]; lastAcc[1] = ac[1]; lastAcc[2] = ac[2];
       float mg[3];
@@ -220,12 +212,22 @@ void controlTick() {
       fusion.euler(r, p, y);
       roll = r; pitch = p; heading = y;
       updateOdometry(dt);
+    } else {
+      static uint8_t imuFailCount = 0;
+      if (++imuFailCount > 20) {
+        imuReady = false;
+        fusion.gyroCal = false;
+        fusion.q0 = 1.0f; fusion.q1 = 0.0f; fusion.q2 = 0.0f; fusion.q3 = 0.0f;
+        imuFailCount = 0;
+      }
     }
   } else if (magReady) {
     int16_t rx, ry, rz;
     if (compass.readRaw(rx, ry, rz)) {
       heading = atan2f(MAG_MAP_Y, MAG_MAP_X) * RAD_TO_DEG;
     }
+  } else {
+    fusion.gyroCal = false;
   }
 
 
@@ -290,21 +292,25 @@ void controlTick() {
       z = -0.7f * x;
       break;
     case MODE_TANK:
-      z = x; x = 0;
+      if (fabsf(x) > fabsf(z)) z = x;
+      x = 0;
       break;
   }
   if (mode != MODE_HEADING_LOCK) z += (trimF * y + trimS * x) / 100.0f;
 
   if (in.flags & FLAG_TURBO) {
     spd = 100;
-    amax *= 2.5f;
-    jmax *= 3.0f;
+    amax *= 4.0f;
+    jmax *= 5.0f;
   }
   if (in.flags & FLAG_CRAWL) spd = min(spd, crawlPct);
   spd = constrain(spd, 0, 100);
 
+  // Fast, low-latency response for remote input while preserving smooth transitions
+  float effAmax = max(amax, 8.0f);
+  float effJmax = max(jmax, 45.0f);
   float tgt[3] = {constrain(x, -1.0f, 1.0f), constrain(y, -1.0f, 1.0f), constrain(z, -1.0f, 1.0f)};
-  for (int i = 0; i < 3; i++) profile(ax[i], tgt[i], amax, jmax, dt);
+  for (int i = 0; i < 3; i++) profile(ax[i], tgt[i], effAmax, effJmax, dt);
 
   if (!imuReady) {
     heading += ax[2].v * (spd / 100.0f) * degPerSecFull * dt;
@@ -313,8 +319,10 @@ void controlTick() {
   }
 
   bool moving = fabsf(ax[0].v) > 0.01f || fabsf(ax[1].v) > 0.01f || fabsf(ax[2].v) > 0.01f;
-  if (moving || now - lastOut > 150) {
+  static bool wasMoving = false;
+  if (moving || wasMoving || now - lastOut > 100) {
     lastOut = now;
+    wasMoving = moving;
     Serial2.printf("D,%d,%d,%d,%d\n", (int)lroundf(ax[0].v * 100), (int)lroundf(ax[1].v * 100),
                    (int)lroundf(ax[2].v * 100), moving ? spd : 0);
   }
@@ -524,7 +532,7 @@ void sendTelemetry() {
     t.ultraMm = ultraMm; t.tofMm[0] = tofMm[0]; t.tofMm[1] = tofMm[1];
     for (int i = 0; i < 4; i++) t.wheelMmS[i] = wheelMmS[i];
     t.posCm[0] = (int16_t)odomX; t.posCm[1] = (int16_t)odomY;
-    t.calFlags = (fusion.gyroCal ? CAL_GYRO_OK : 0) | (fusion.magCal ? CAL_MAG_OK : 0) |
+    t.calFlags = ((imuReady && fusion.gyroCal) ? CAL_GYRO_OK : 0) | ((magReady && fusion.magCal) ? CAL_MAG_OK : 0) |
                  (fusion.levelCal ? CAL_LEVEL_OK : 0) | (fusion.stationary ? CAL_STILL : 0);
     t.magCoverage = (uint8_t)(fusion.magCoverage * 100);
     t.seq = ++telemSeq;
@@ -584,9 +592,12 @@ bool initIMU() {
   for (int i = 0; i < 2; i++) {
     uint8_t addr = addrs[i];
     Wire.beginTransmission(addr);
+    if (Wire.endTransmission() != 0) continue; // Strict I2C ACK check
+    Wire.beginTransmission(addr);
     Wire.write(0x75); // WHO_AM_I
     if (Wire.endTransmission(false) == 0 && Wire.requestFrom((int)addr, 1) == 1) {
       uint8_t who = Wire.read();
+      if (who == 0x00 || who == 0xFF) continue;
       Serial.printf("[IMU] Detected MPU/ICM at 0x%02X (WHO_AM_I=0x%02X)\n", addr, who);
       mpuAddr = addr;
       
@@ -621,24 +632,6 @@ bool initIMU() {
       }
       imuReady = false;
     }
-  }
-  // Library fallback
-  if (mpu.begin(0x68, &Wire) || mpu.begin(0x69, &Wire)) {
-    imuReady = true;
-    mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
-    mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-    mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
-    mpu.setI2CBypass(true);
-    float sumGz = 0;
-    for (int i = 0; i < 40; i++) {
-      sensors_event_t a, g, temp;
-      mpu.getEvent(&a, &g, &temp);
-      sumGz += g.gyro.z;
-      delay(3);
-    }
-    gyroZ_offset = sumGz / 40.0f;
-    Serial.printf("[IMU] MPU6050 library initialized. GyroZ offset: %.4f\n", gyroZ_offset);
-    return true;
   }
   return false;
 }

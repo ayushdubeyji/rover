@@ -86,32 +86,46 @@ bool QMI8658Driver::readSensor() {
   gy = (float)rawGy / 64.0f;
   gz = (float)rawGz / 64.0f;
 
-  // Angles in degrees (Rotation 2: 180 deg inverted handheld screen)
-  // Screen facing user -> resting gravity pulls along -az (~ -1.0g).
-  // Using -az as positive vertical axis prevents +/-180 deg branch cut jump at rest.
-  // Pitch (forward tilt, top down) = +ax; Roll (right bank tilt) = -ay
-  float p = atan2f(ax, -az) * (180.0f / (float)M_PI);
-  float r = atan2f(-ay, -az) * (180.0f / (float)M_PI);
+  // 3D Euclidean tilt angles for handheld screen (works whether held flat OR vertically at any resting angle):
+  // Roll (left/right steering tilt): atan2(ax, sqrt(ay^2 + az^2))
+  // Pitch (forward/backward throttle tilt): atan2(-ay, -az) when flat, or full 3D pitch relative to calibrated resting gravity vector
+  float norm = sqrtf(ax * ax + ay * ay + az * az);
+  if (norm < 0.1f) norm = 1.0f;
+  float nAx = ax / norm, nAy = ay / norm, nAz = az / norm;
 
-  pitch = p - pitchZero;
+  // Pitch: forward/back tilt in the Y-Z plane
+  float p = atan2f(-nAy, -nAz) * (180.0f / (float)M_PI);
+  // Roll: left/right bank tilt across the X axis
+  float r = asinf(constrain(nAx, -1.0f, 1.0f)) * (180.0f / (float)M_PI);
+
+  float dp = p - pitchZero;
+  while (dp > 180.0f) dp -= 360.0f;
+  while (dp < -180.0f) dp += 360.0f;
+  pitch = dp;
   roll = r - rollZero;
   return true;
 }
 
 void QMI8658Driver::calibrateZero() {
   if (!isConnected) return;
-  float sumP = 0, sumR = 0, sumGz = 0;
+  float sumAx = 0, sumAy = 0, sumAz = 0, sumGx = 0, sumGy = 0, sumGz = 0;
   for (int i = 0; i < 40; i++) {
     readSensor();
-    float p = atan2f(ax, -az) * (180.0f / (float)M_PI);
-    float r = atan2f(-ay, -az) * (180.0f / (float)M_PI);
-    sumP += p;
-    sumR += r;
+    sumAx += ax;
+    sumAy += ay;
+    sumAz += az;
+    sumGx += gx;
+    sumGy += gy;
     sumGz += gz;
     delay(4);
   }
-  pitchZero = sumP / 40.0f;
-  rollZero = sumR / 40.0f;
+  float mAx = sumAx / 40.0f, mAy = sumAy / 40.0f, mAz = sumAz / 40.0f;
+  float norm = sqrtf(mAx * mAx + mAy * mAy + mAz * mAz);
+  if (norm < 0.1f) norm = 1.0f;
+  pitchZero = atan2f(-mAy / norm, -mAz / norm) * (180.0f / (float)M_PI);
+  rollZero = asinf(constrain(mAx / norm, -1.0f, 1.0f)) * (180.0f / (float)M_PI);
+  gxZero = sumGx / 40.0f;
+  gyZero = sumGy / 40.0f;
   gzZero = sumGz / 40.0f;
 }
 

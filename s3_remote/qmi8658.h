@@ -13,6 +13,8 @@ public:
   // Calibration offsets
   float pitchZero = 0;
   float rollZero = 0;
+  float gxZero = 0;
+  float gyZero = 0;
   float gzZero = 0;
 
   bool begin(uint8_t sdaPin, uint8_t sclPin, uint8_t addr = 0x6B);

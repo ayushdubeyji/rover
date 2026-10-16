@@ -95,7 +95,7 @@ void DisplayUI::drawAttitude(const RemoteTelemetry &tm) {
   if (shown.w * t.w + shown.x * t.x + shown.y * t.y + shown.z * t.z < 0.0f) {
     t.w = -t.w; t.x = -t.x; t.y = -t.y; t.z = -t.z;
   }
-  float k = 0.35f;
+  float k = 0.50f;
   shown.w += (t.w - shown.w) * k; shown.x += (t.x - shown.x) * k;
   shown.y += (t.y - shown.y) * k; shown.z += (t.z - shown.z) * k;
   float n = 1.0f / sqrtf(shown.w*shown.w + shown.x*shown.x + shown.y*shown.y + shown.z*shown.z + 1e-9f);
@@ -111,7 +111,7 @@ void DisplayUI::drawAttitude(const RemoteTelemetry &tm) {
   sRot.z = s.z * cPsi + s.w * sPsi;
 
   float roll = atan2f(2*(sRot.w*sRot.x + sRot.y*sRot.z), 1 - 2*(sRot.x*sRot.x + sRot.y*sRot.y)) * RAD_TO_DEG;
-  float pitch = asinf(constrain(2*(sRot.w*sRot.y - sRot.z*sRot.x), -1.0f, 1.0f)) * RAD_TO_DEG;
+  float pitch = -asinf(constrain(2*(sRot.w*sRot.y - sRot.z*sRot.x), -1.0f, 1.0f)) * RAD_TO_DEG;
   float yaw = atan2f(2*(sRot.w*sRot.z + sRot.x*sRot.y), 1 - 2*(sRot.y*sRot.y + sRot.z*sRot.z)) * RAD_TO_DEG;
   if (isnan(roll)) roll = 0.0f;
   if (isnan(pitch)) pitch = 0.0f;
