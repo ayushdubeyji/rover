@@ -9,7 +9,8 @@ enum MagChipType {
   MAG_HMC5883L,
   MAG_AK8963,
   MAG_LIS3MDL,
-  MAG_IST8310
+  MAG_IST8310,
+  MAG_MMC5603
 };
 
 class RoverCompass {
@@ -79,6 +80,14 @@ public:
       return true;
     }
 
+    // 6. Try MMC5603 (0x30)
+    Wire.beginTransmission(0x30);
+    if (Wire.endTransmission() == 0) {
+      writeReg(0x30, 0x1B, 0x01); // Take measurement / continuous mode
+      chip = MAG_MMC5603;
+      return true;
+    }
+
     chip = MAG_NONE;
     return false;
   }
@@ -136,6 +145,20 @@ public:
       rx = (int16_t)(Wire.read() | (Wire.read() << 8));
       ry = (int16_t)(Wire.read() | (Wire.read() << 8));
       rz = (int16_t)(Wire.read() | (Wire.read() << 8));
+      return true;
+    } else if (chip == MAG_MMC5603) {
+      Wire.beginTransmission(0x30);
+      Wire.write(0x00);
+      if (Wire.endTransmission(false) != 0) return false;
+      if (Wire.requestFrom((uint8_t)0x30, (uint8_t)6) != 6) return false;
+      uint8_t mx_h = Wire.read(), mx_l = Wire.read();
+      uint8_t my_h = Wire.read(), my_l = Wire.read();
+      uint8_t mz_h = Wire.read(), mz_l = Wire.read();
+      rx = (int16_t)(((uint16_t)(mx_h << 8) | mx_l) - 32768);
+      ry = (int16_t)(((uint16_t)(my_h << 8) | my_l) - 32768);
+      rz = (int16_t)(((uint16_t)(mz_h << 8) | mz_l) - 32768);
+      // Trigger next measurement
+      writeReg(0x30, 0x1B, 0x01);
       return true;
     }
     return false;

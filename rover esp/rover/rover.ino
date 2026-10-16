@@ -18,8 +18,8 @@
 #define PIN_US_ECHO 34      // via 5V->3.3V divider (1k/2k)
 #define PIN_TOF1_XSHUT 26   // front-left
 #define PIN_TOF2_XSHUT 27   // front-right
-#define TOF1_ADDR 0x30
-#define TOF2_ADDR 0x31
+#define TOF1_ADDR 0x32
+#define TOF2_ADDR 0x33
 // Magnetometer axis remap into body frame (X fwd, Y left, Z up). Adjust after the axis test.
 #ifndef MAG_MAP_X
 #define MAG_MAP_X ((float)rx)
@@ -224,7 +224,16 @@ void controlTick() {
   } else if (magReady) {
     int16_t rx, ry, rz;
     if (compass.readRaw(rx, ry, rz)) {
+      lastMag[0] = MAG_MAP_X;
+      lastMag[1] = MAG_MAP_Y;
+      lastMag[2] = MAG_MAP_Z;
       heading = atan2f(MAG_MAP_Y, MAG_MAP_X) * RAD_TO_DEG;
+      float halfH = heading * DEG_TO_RAD * 0.5f;
+      fusion.q0 = cosf(halfH);
+      fusion.q1 = 0.0f;
+      fusion.q2 = 0.0f;
+      fusion.q3 = sinf(halfH);
+      fusion.magCal = true;
     }
   } else {
     fusion.gyroCal = false;
@@ -652,6 +661,7 @@ bool initMag() {
     else if (compass.chip == MAG_AK8963)   cname = "AK8963/MPU9250 (0x0C)";
     else if (compass.chip == MAG_LIS3MDL)  cname = "LIS3MDL (0x1C)";
     else if (compass.chip == MAG_IST8310)  cname = "IST8310 (0x0E)";
+    else if (compass.chip == MAG_MMC5603)  cname = "MMC5603 (0x30)";
     Serial.printf("[MAG] Magnetometer ready: %s\n", cname);
     return true;
   }
@@ -671,30 +681,33 @@ void setup() {
     pinMode(22, INPUT_PULLUP); delayMicroseconds(5);
   }
 
-  // Initialize I2C for MPU6050 & Magnetometer on GPIO 19 (SDA) and GPIO 22 (SCL)
-  Wire.begin(19, 22, 100000);
-  Wire.setTimeOut(30);
-  initIMU();
-  initMag();
-
-  // Auto-detect swapped wires (SDA=22, SCL=19) if primary pair found nothing
-  if (!imuReady && !magReady) {
+  // Probe Candidate I2C Pin Pairs for MPU6050 and Magnetometer:
+  // Pair 0: (SDA=19, SCL=22), Pair 1: (SDA=21, SCL=22), Pair 2: (SDA=22, SCL=19)
+  const int candidatePairs[3][2] = {{19, 22}, {21, 22}, {22, 19}};
+  int activeSda = 19, activeScl = 22;
+  for (int p = 0; p < 3; p++) {
+    int sdaP = candidatePairs[p][0];
+    int sclP = candidatePairs[p][1];
     Wire.end();
-    pinMode(22, INPUT_PULLUP); pinMode(19, INPUT_PULLUP);
-    for (int i = 0; i < 16; i++) {
-      pinMode(19, OUTPUT); digitalWrite(19, LOW); delayMicroseconds(5);
-      pinMode(19, INPUT_PULLUP); delayMicroseconds(5);
+    pinMode(sdaP, INPUT_PULLUP);
+    pinMode(sclP, INPUT_PULLUP);
+    for (int i = 0; i < 9; i++) {
+      pinMode(sclP, OUTPUT); digitalWrite(sclP, LOW); delayMicroseconds(5);
+      pinMode(sclP, INPUT_PULLUP); delayMicroseconds(5);
     }
-    Wire.begin(22, 19, 100000);
+    Wire.begin(sdaP, sclP, 100000);
     Wire.setTimeOut(30);
     if (initIMU() || initMag()) {
-      Serial.println("[I2C] Auto-detected reversed I2C pinout: SDA=22, SCL=19!");
-    } else {
-      // Revert to user-specified SDA=19, SCL=22
-      Wire.end();
-      Wire.begin(19, 22, 100000);
-      Wire.setTimeOut(30);
+      activeSda = sdaP; activeScl = sclP;
+      Serial.printf("[I2C] Locked onto active bus: SDA=%d, SCL=%d (IMU=%d, MAG=%d)\n", sdaP, sclP, imuReady, magReady);
+      break;
     }
+  }
+  if (!imuReady && !magReady) {
+    // Keep default bus active
+    Wire.end();
+    Wire.begin(activeSda, activeScl, 100000);
+    Wire.setTimeOut(30);
   }
 
   fusion.load(prefs);
@@ -747,7 +760,22 @@ void setup() {
     ok();
   });
   server.on("/i2c", []() {
-    String s = "{\"devices\":[";
+    int sda_query = server.hasArg("sda") ? server.arg("sda").toInt() : 19;
+    int scl_query = server.hasArg("scl") ? server.arg("scl").toInt() : 22;
+    if (server.hasArg("sda")) {
+      Wire.end();
+      pinMode(scl_query, INPUT_PULLUP);
+      pinMode(sda_query, INPUT_PULLUP);
+      for (int i = 0; i < 9; i++) {
+        pinMode(scl_query, OUTPUT); digitalWrite(scl_query, LOW); delayMicroseconds(5);
+        pinMode(scl_query, INPUT_PULLUP); delayMicroseconds(5);
+      }
+      Wire.begin(sda_query, scl_query, 100000);
+      Wire.setTimeOut(30);
+      initIMU();
+      initMag();
+    }
+    String s = "{\"sda\":" + String(sda_query) + ",\"scl\":" + String(scl_query) + ",\"devices\":[";
     bool first = true;
     for (uint8_t a = 1; a < 127; a++) {
       Wire.beginTransmission(a);
@@ -759,7 +787,7 @@ void setup() {
         s += buf;
       }
     }
-    char extra[64];
+    char extra[80];
     snprintf(extra, sizeof(extra), "],\"imu\":%d,\"mag\":%d,\"mpu\":\"0x%02X\",\"chip\":%d}", imuReady ? 1 : 0, magReady ? 1 : 0, mpuAddr, (int)compass.chip);
     s += extra;
     server.send(200, "application/json", s);
