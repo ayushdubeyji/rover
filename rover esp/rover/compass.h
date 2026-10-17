@@ -80,12 +80,31 @@ public:
       return true;
     }
 
-    // 6. Try MMC5603 (0x30)
+    // 6. Try MMC5603 (0x30) - verify it is NOT a VL53L0X ToF (reg 0xC0 == 0xEE) and verify Product ID (reg 0x39 == 0x10)
     Wire.beginTransmission(0x30);
-    if (Wire.endTransmission() == 0) {
-      writeReg(0x30, 0x1B, 0x01); // Take measurement / continuous mode
-      chip = MAG_MMC5603;
-      return true;
+    Wire.write(0xC0);
+    uint8_t c0 = 0;
+    if (Wire.endTransmission(false) == 0 && Wire.requestFrom((uint8_t)0x30, (uint8_t)1) == 1) {
+      c0 = Wire.read();
+    }
+    if (c0 != 0xEE) {
+      Wire.beginTransmission(0x30);
+      Wire.write(0x39);
+      if (Wire.endTransmission(false) == 0 && Wire.requestFrom((uint8_t)0x30, (uint8_t)1) == 1) {
+        uint8_t pid = Wire.read();
+        if (pid == 0x10) {
+          writeReg(0x30, 0x1C, 0x80); // Software reset
+          delay(20);
+          writeReg(0x30, 0x1B, 0x08); // Do_Set (degauss sensor bridge)
+          delay(5);
+          writeReg(0x30, 0x1A, 100);  // ODR = 100Hz
+          writeReg(0x30, 0x1B, 0xA0); // Auto_SR_en (0x20) + Cmm_freq_en (0x80)
+          writeReg(0x30, 0x1D, 0x10); // Cmm_en (0x10) continuous measurement mode
+          delay(10);
+          chip = MAG_MMC5603;
+          return true;
+        }
+      }
     }
 
     chip = MAG_NONE;
@@ -151,14 +170,14 @@ public:
       Wire.write(0x00);
       if (Wire.endTransmission(false) != 0) return false;
       if (Wire.requestFrom((uint8_t)0x30, (uint8_t)6) != 6) return false;
-      uint8_t mx_h = Wire.read(), mx_l = Wire.read();
-      uint8_t my_h = Wire.read(), my_l = Wire.read();
-      uint8_t mz_h = Wire.read(), mz_l = Wire.read();
-      rx = (int16_t)(((uint16_t)(mx_h << 8) | mx_l) - 32768);
-      ry = (int16_t)(((uint16_t)(my_h << 8) | my_l) - 32768);
-      rz = (int16_t)(((uint16_t)(mz_h << 8) | mz_l) - 32768);
-      // Trigger next measurement
-      writeReg(0x30, 0x1B, 0x01);
+      uint16_t mx_u = ((uint16_t)Wire.read() << 8) | Wire.read();
+      uint16_t my_u = ((uint16_t)Wire.read() << 8) | Wire.read();
+      uint16_t mz_u = ((uint16_t)Wire.read() << 8) | Wire.read();
+      rx = (int16_t)((int32_t)mx_u - 32768);
+      ry = (int16_t)((int32_t)my_u - 32768);
+      rz = (int16_t)((int32_t)mz_u - 32768);
+      // Also trigger single measurement + Auto_SR in case continuous mode was interrupted
+      writeReg(0x30, 0x1B, 0x21);
       return true;
     }
     return false;

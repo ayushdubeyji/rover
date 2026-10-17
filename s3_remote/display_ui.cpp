@@ -16,12 +16,14 @@
 #define CH 156
 #define STRIP_Y 156
 
-static const char *MODE_NAMES_REMOTE[MODE_COUNT] = {"NORMAL", "CRAWL", "CRUISE", "SPORT", "FIELD", "HEAD-LOCK", "DRIFT", "ORBIT", "TANK"};
-static const char *VIEW_NAMES[VIEW_COUNT] = {"ATTITUDE", "MAP", "SENSORS", "DRIVE"};
+static const char *MODE_NAMES_REMOTE[MODE_COUNT] = {"NORMAL", "CRAWL", "CRUISE", "SPORT", "FIELD", "HEAD-LOCK", "DRIFT", "ORBIT", "TANK", "AUTO"};
+static const char *AIR_AXIS_NAMES[6] = {"Std (P/R)", "Swap (R/P)", "Inv Pitch", "Inv Roll", "Inv Both", "Swap Inv"};
 static const char *MENU_ITEMS[DisplayUI::MENU_ITEM_COUNT] = {
-  "Drive Mode", "Control Input", "Speed Limit", "Deadzone", "Expo Curve",
+  "Drive Mode", "Semi-Auto Mode", "Auto Speed", "Crash Protect", "Control Input", "Air Gyro Axis", "Speed Limit", "Deadzone", "Expo Curve",
   "Trim Fwd/Back", "Trim Strafe", "Trim Yaw", "Gyro Smooth", "Brightness",
-  "Haptics", "Haptic Str", "Cal Joystick", "Cal Air Tilt", "Level Rover", "Zero Yaw", "Save Settings", "Exit"
+  "Haptics", "Haptic Str",
+  "Enc Mode", "Enc Repeat", "Enc DT Pin", "Enc Sens",
+  "Cal Joystick", "Cal Air Tilt", "Level Rover", "Zero Yaw", "Save Settings", "Exit"
 };
 
 void DisplayUI::begin() {
@@ -37,7 +39,7 @@ void DisplayUI::begin() {
   bus = new Arduino_ESP32SPI(LCD_DC_PIN, GFX_NOT_DEFINED, LCD_SCLK_PIN, LCD_MOSI_PIN);
   // Rotation 2 (180 deg): damaged top 8 mm becomes the bottom info strip. 240x240 needs row offset 80 on rot 2/3.
   tft = new Arduino_ST7789(bus, LCD_RST_PIN, 2, true, LCD_WIDTH, LCD_HEIGHT, 0, 0, 0, 80);
-  tft->begin(40000000);
+  tft->begin(80000000);
   tft->invertDisplay(false);
   tft->fillScreen(C_BG);
 
@@ -85,44 +87,55 @@ void DisplayUI::drawHeader(const RemoteTelemetry &tm, const char *title) {
 
 void DisplayUI::drawAttitude(const RemoteTelemetry &tm) {
   drawHeader(tm, "ATTITUDE HUD");
-  Quat t = tm.q;
-  float tMag = sqrtf(t.w*t.w + t.x*t.x + t.y*t.y + t.z*t.z);
-  if (tMag < 0.1f || isnan(tMag)) {
-    t = {1.0f, 0.0f, 0.0f, 0.0f};
-  } else {
-    t.w /= tMag; t.x /= tMag; t.y /= tMag; t.z /= tMag;
-  }
-  if (shown.w * t.w + shown.x * t.x + shown.y * t.y + shown.z * t.z < 0.0f) {
-    t.w = -t.w; t.x = -t.x; t.y = -t.y; t.z = -t.z;
-  }
-  float k = 0.50f;
-  shown.w += (t.w - shown.w) * k; shown.x += (t.x - shown.x) * k;
-  shown.y += (t.y - shown.y) * k; shown.z += (t.z - shown.z) * k;
-  float n = 1.0f / sqrtf(shown.w*shown.w + shown.x*shown.x + shown.y*shown.y + shown.z*shown.z + 1e-9f);
-  Quat s = {shown.w * n, shown.x * n, shown.y * n, shown.z * n};
 
-  // Apply rotary encoder 360-degree inspection rotation around vehicle Z axis
-  float halfPsi = tm.inspectYaw * DEG_TO_RAD * 0.5f;
-  float cPsi = cosf(halfPsi), sPsi = sinf(halfPsi);
+  // Smooth decoupled Euler angles so pitch/roll never gimbal-lock or invert when yaw rotates
+  static float sRoll = 0.0f, sPitch = 0.0f, sYaw = 0.0f;
+  float effRoll = tm.imuRollDeg;
+  float effPitch = tm.imuPitchDeg;
+  if (tm.ctrlSource == CTRL_AIR_REMOTE || tm.airAxis != 0) {
+    if (tm.airAxis == 1) { effRoll = tm.imuPitchDeg; effPitch = tm.imuRollDeg; }
+    else if (tm.airAxis == 2) { effPitch = -tm.imuPitchDeg; }
+    else if (tm.airAxis == 3) { effRoll = -tm.imuRollDeg; }
+    else if (tm.airAxis == 4) { effPitch = -tm.imuPitchDeg; effRoll = -tm.imuRollDeg; }
+    else if (tm.airAxis == 5) { effRoll = -tm.imuPitchDeg; effPitch = -tm.imuRollDeg; }
+  }
+  float targetRoll = constrain(effRoll, -65.0f, 65.0f);
+  float targetPitch = constrain(effPitch, -65.0f, 65.0f);
+  float targetYaw = fmodf(tm.imuYawDeg + tm.inspectYaw + 3600.0f, 360.0f);
+
+
+  sRoll += (targetRoll - sRoll) * 0.55f;
+  sPitch += (targetPitch - sPitch) * 0.55f;
+  float dYaw = targetYaw - sYaw;
+  while (dYaw > 180.0f) dYaw -= 360.0f;
+  while (dYaw < -180.0f) dYaw += 360.0f;
+  sYaw = fmodf(sYaw + dYaw * 0.55f + 360.0f, 360.0f);
+
+  float roll = sRoll;
+  float pitch = sPitch;
+  float yaw = sYaw;
+
+  // Viewer-frame quaternion: Q = Qx(roll) * Qy(pitch) * Qz(-yaw)
+  // First rotates car on ground plane to clockwise compass heading (-yaw around +Z),
+  // then tilts in screen viewer frame (+pitch = nose/top down, +roll = right side down)
+  float rRad = roll * DEG_TO_RAD * 0.5f;
+  float pRad = pitch * DEG_TO_RAD * 0.5f;
+  float zRad = -yaw * DEG_TO_RAD * 0.5f;
+  float cr = cosf(rRad), sr = sinf(rRad);
+  float cp = cosf(pRad), sp = sinf(pRad);
+  float cz = cosf(zRad), sz = sinf(zRad);
+
   Quat sRot;
-  sRot.w = s.w * cPsi - s.z * sPsi;
-  sRot.x = s.x * cPsi + s.y * sPsi;
-  sRot.y = s.y * cPsi - s.x * sPsi;
-  sRot.z = s.z * cPsi + s.w * sPsi;
-
-  float roll = atan2f(2*(sRot.w*sRot.x + sRot.y*sRot.z), 1 - 2*(sRot.x*sRot.x + sRot.y*sRot.y)) * RAD_TO_DEG;
-  float pitch = -asinf(constrain(2*(sRot.w*sRot.y - sRot.z*sRot.x), -1.0f, 1.0f)) * RAD_TO_DEG;
-  float yaw = atan2f(2*(sRot.w*sRot.z + sRot.x*sRot.y), 1 - 2*(sRot.y*sRot.y + sRot.z*sRot.z)) * RAD_TO_DEG;
-  if (isnan(roll)) roll = 0.0f;
-  if (isnan(pitch)) pitch = 0.0f;
-  if (isnan(yaw)) yaw = 0.0f;
-  if (yaw < 0.0f) yaw += 360.0f;
+  sRot.w = cr * cp * cz - sr * sp * sz;
+  sRot.x = sr * cp * cz + cr * sp * sz;
+  sRot.y = cr * sp * cz - sr * cp * sz;
+  sRot.z = sr * sp * cz + cr * cp * sz;
 
   // Render 3D Solid or PBR digital twin
   if (tm.renderMode == 1) {
     car.draw(canvas, 120, 76, 76.0f, sRot);
   } else {
-    car.drawPBR(canvas, 120, 76, yaw, roll, pitch);
+    car.drawPBR(canvas, 120, 76, 360.0f - yaw, roll, pitch);
   }
 
   // Tactical Compass Reticle & Cardinal Directions (N, E, S, W) around 3D Rover
@@ -160,6 +173,12 @@ void DisplayUI::drawAttitude(const RemoteTelemetry &tm) {
     int x2 = cx + (int)(sa * 62.0f), y2 = cy - (int)(ca * 62.0f);
     canvas->drawLine(x1, y1, x2, y2, 0x2945);
   }
+
+  // Live heading pointer bug on compass ring
+  float hRad = yaw * DEG_TO_RAD;
+  int hx = cx + (int)(sinf(hRad) * 60.0f);
+  int hy = cy - (int)(cosf(hRad) * 60.0f);
+  canvas->fillCircle(hx, hy, 3, C_GREEN);
 
   // Cardinal quadrant text
   const char *card = "N";
@@ -212,14 +231,14 @@ void DisplayUI::drawMap(const RemoteTelemetry &tm) {
     if (px > 0 && px < CW && py > 15 && py < CH) canvas->drawPixel(px, py, i < 8 ? C_GREEN : C_BLUE);
   }
 
-  float yaw = tm.hasTelem ? atan2f(2*(tm.q.w*tm.q.z + tm.q.x*tm.q.y), 1 - 2*(tm.q.y*tm.q.y + tm.q.z*tm.q.z)) : 0;
-  float fx = -sinf(yaw), fy = -cosf(yaw);           // screen forward vector
-  float lx = -fy, ly = fx;                           // screen left vector (perp)
+  float yaw = tm.imuYawDeg * DEG_TO_RAD;
+  float fx = sinf(yaw), fy = -cosf(yaw);             // screen forward vector (0=N/Up, 90=E/Right)
+  float lx = -fy, ly = fx;                           // screen right vector (perp)
   canvas->fillTriangle(cx + (int)(fx * 9), cy + (int)(fy * 9),
                        cx + (int)(-fx * 6 + lx * 6), cy + (int)(-fy * 6 + ly * 6),
                        cx + (int)(-fx * 6 - lx * 6), cy + (int)(-fy * 6 - ly * 6), C_GREEN);
 
-  struct Ray { uint16_t mm; float ang; } rays[3] = {{tm.ultraMm, 0}, {tm.tofMm[0], 0.52f}, {tm.tofMm[1], -0.52f}};
+  struct Ray { uint16_t mm; float ang; } rays[3] = {{tm.ultraMm, 0}, {tm.tofMm[0], 0.5585f}, {tm.tofMm[1], -0.5585f}};
   for (int i = 0; i < 3; i++) {
     if (!rays[i].mm || rays[i].mm > 2000) continue;
     float d = rays[i].mm / 10.0f / cmPerPx + 8;
@@ -279,9 +298,18 @@ void DisplayUI::drawDrive(const RemoteTelemetry &tm) {
   canvas->drawFastHLine(cx - 5, cy, 11, C_BORDER);
   canvas->drawFastVLine(cx, cy - 5, 11, C_BORDER);
 
+  // Effective tilt angles according to user airAxis configuration
+  float effP = tm.imuPitchDeg;
+  float effR = -tm.imuRollDeg;
+  if (tm.airAxis == 1) { effP = tm.imuRollDeg; effR = -tm.imuPitchDeg; }
+  else if (tm.airAxis == 2) { effP = -tm.imuPitchDeg; effR = -tm.imuRollDeg; }
+  else if (tm.airAxis == 3) { effP = tm.imuPitchDeg; effR = tm.imuRollDeg; }
+  else if (tm.airAxis == 4) { effP = -tm.imuPitchDeg; effR = tm.imuRollDeg; }
+  else if (tm.airAxis == 5) { effP = -tm.imuRollDeg; effR = tm.imuPitchDeg; }
+
   // Artificial horizon tilt bar
-  float pClamped = constrain(tm.imuPitchDeg, -25.0f, 25.0f);
-  float rClamped = constrain(tm.imuRollDeg, -35.0f, 35.0f);
+  float pClamped = constrain(effP, -25.0f, 25.0f);
+  float rClamped = constrain(effR, -35.0f, 35.0f);
   int hy = cy - (int)(pClamped * 1.4f);
   float rRad = rClamped * DEG_TO_RAD;
   int hdx = (int)(cosf(rRad) * 26.0f);
@@ -289,11 +317,11 @@ void DisplayUI::drawDrive(const RemoteTelemetry &tm) {
   canvas->drawLine(cx - hdx, hy + hdy, cx + hdx, hy - hdy, 0x2145);
 
   // Live tilt vector bubble
-  int bx = cx + (int)constrain(tm.imuRollDeg * 1.5f, -38.0f, 38.0f);
-  int by = cy - (int)constrain(tm.imuPitchDeg * 1.5f, -38.0f, 38.0f);
+  int bx = cx + (int)constrain(effR * 1.5f, -38.0f, 38.0f);
+  int by = cy - (int)constrain(effP * 1.5f, -38.0f, 38.0f);
   canvas->drawLine(cx, cy, bx, by, 0x2987);
 
-  bool inDeadband = (fabsf(tm.imuPitchDeg) <= 3.5f && fabsf(tm.imuRollDeg) <= 3.5f);
+  bool inDeadband = (fabsf(effP) <= 3.5f && fabsf(effR) <= 3.5f);
   uint16_t bubbleCol = (tm.isBrake || tm.isEStop) ? C_RED : tm.deadmanEngaged ? (inDeadband ? C_GREEN : C_CYAN) : C_ORANGE;
   canvas->fillCircle(bx, by, 6, bubbleCol);
   canvas->drawCircle(bx, by, 7, C_TEXT);
@@ -306,9 +334,10 @@ void DisplayUI::drawDrive(const RemoteTelemetry &tm) {
 
   canvas->setTextColor(C_TEXT);
   canvas->setCursor(128, 32);
-  canvas->printf("PITCH: %+5.1f", tm.imuPitchDeg);
+  canvas->printf("PITCH: %+5.1f", effP);
   canvas->setCursor(128, 43);
-  canvas->printf("ROLL:  %+5.1f", tm.imuRollDeg);
+  canvas->printf("ROLL:  %+5.1f", effR);
+
 
   // Throttle bar
   canvas->setTextColor(C_MUTED);
@@ -395,10 +424,14 @@ void DisplayUI::drawMenu(const RemoteTelemetry &tm) {
     canvas->setCursor(148, y + 7);
     switch (i) {
       case 0: canvas->setTextColor(C_YELLOW); canvas->print(MODE_NAMES_REMOTE[tm.roverMode % MODE_COUNT]); break;
-      case 1: canvas->setTextColor(C_CYAN); canvas->print(tm.ctrlSource == CTRL_JOYSTICK ? "Joystick" : "Air tilt"); break;
-      case 2: canvas->setTextColor(C_GREEN); canvas->printf("%d%%", tm.speedLimit); break;
-      case 3: canvas->setTextColor(C_CYAN); canvas->printf("%d%%", tm.deadzonePct); break;
-      case 4: {
+      case 1: canvas->setTextColor(tm.semiAuto ? C_GREEN : C_MUTED); canvas->print(tm.semiAuto ? "ON (TANK)" : "OFF"); break;
+      case 2: canvas->setTextColor(C_GREEN); canvas->printf("%d%%", tm.autoSpeed); break;
+      case 3: canvas->setTextColor(tm.crashProtect ? C_GREEN : C_RED); canvas->print(tm.crashProtect ? "ON (ALL)" : "OFF"); break;
+      case 4: canvas->setTextColor(C_CYAN); canvas->print(tm.ctrlSource == CTRL_JOYSTICK ? "Joystick" : "Air tilt"); break;
+      case 5: canvas->setTextColor(C_GREEN); canvas->print(AIR_AXIS_NAMES[tm.airAxis % 6]); break;
+      case 6: canvas->setTextColor(C_GREEN); canvas->printf("%d%%", tm.speedLimit); break;
+      case 7: canvas->setTextColor(C_CYAN); canvas->printf("%d%%", tm.deadzonePct); break;
+      case 8: {
         const char *expStr = "Linear";
         if (tm.expoPct >= 80) expStr = "Precise";
         else if (tm.expoPct >= 50) expStr = "Sport";
@@ -406,19 +439,41 @@ void DisplayUI::drawMenu(const RemoteTelemetry &tm) {
         canvas->setTextColor(C_YELLOW); canvas->printf("%s (%d%%)", expStr, tm.expoPct);
         break;
       }
-      case 5: canvas->setTextColor(tm.trimFwd == 0 ? C_MUTED : C_CYAN); canvas->printf("%+d%%", tm.trimFwd); break;
-      case 6: canvas->setTextColor(tm.trimStrafe == 0 ? C_MUTED : C_CYAN); canvas->printf("%+d%%", tm.trimStrafe); break;
-      case 7: canvas->setTextColor(tm.trimYaw == 0 ? C_MUTED : C_CYAN); canvas->printf("%+d%%", tm.trimYaw); break;
-      case 8: canvas->setTextColor(C_GREEN); canvas->printf("%d / 10", tm.gyroSmoothing); break;
-      case 9: canvas->setTextColor(C_GREEN); canvas->printf("%d%%", tm.brightness); break;
-      case 10: canvas->setTextColor(tm.hapticsOn ? C_GREEN : C_RED); canvas->print(tm.hapticsOn ? "ON" : "OFF"); break;
-      case 11: canvas->setTextColor(C_GREEN); canvas->printf("%d%%", tm.hapticStrength); break;
-      case 12: canvas->setTextColor(C_MUTED); canvas->print("click"); break;
-      case 13: canvas->setTextColor(C_MUTED); canvas->print("click"); break;
-      case 14: canvas->setTextColor(tm.calFlags & CAL_LEVEL_OK ? C_GREEN : C_MUTED); canvas->print(tm.calFlags & CAL_LEVEL_OK ? "done" : "click"); break;
-      case 15: canvas->setTextColor(C_MUTED); canvas->print("click"); break;
-      case 16: canvas->setTextColor(C_GREEN); canvas->print("SAVE NVS"); break;
-      case 17: canvas->setTextColor(C_MUTED); canvas->print("close"); break;
+      case 9: canvas->setTextColor(tm.trimFwd == 0 ? C_MUTED : C_CYAN); canvas->printf("%+d%%", tm.trimFwd); break;
+      case 10: canvas->setTextColor(tm.trimStrafe == 0 ? C_MUTED : C_CYAN); canvas->printf("%+d%%", tm.trimStrafe); break;
+      case 11: canvas->setTextColor(tm.trimYaw == 0 ? C_MUTED : C_CYAN); canvas->printf("%+d%%", tm.trimYaw); break;
+      case 12: canvas->setTextColor(C_GREEN); canvas->printf("%d / 10", tm.gyroSmoothing); break;
+      case 13: canvas->setTextColor(C_GREEN); canvas->printf("%d%%", tm.brightness); break;
+      case 14: canvas->setTextColor(tm.hapticsOn ? C_GREEN : C_RED); canvas->print(tm.hapticsOn ? "ON" : "OFF"); break;
+      case 15: canvas->setTextColor(C_GREEN); canvas->printf("%d%%", tm.hapticStrength); break;
+      case 16: {
+        const char *mNames[3] = {"Jog/Spring", "3-Way Sw", "Continuous"};
+        canvas->setTextColor(C_CYAN); canvas->print(mNames[tm.encMode % 3]);
+        break;
+      }
+      case 17: {
+        const char *repNames[4] = {"OFF", "Normal", "Fast", "Slow"};
+        canvas->setTextColor(tm.encRepeat ? C_GREEN : C_MUTED);
+        canvas->print(repNames[tm.encRepeat % 4]);
+        break;
+      }
+      case 18: {
+        const char *pinNames[3] = {"Auto", "IO10(ALT)", "IO17(Std)"};
+        canvas->setTextColor(C_YELLOW);
+        canvas->print(pinNames[tm.encDtPin % 3]);
+        break;
+      }
+      case 19: {
+        const char *sensNames[3] = {"High (1st)", "Norm (2st)", "Low (4st)"};
+        canvas->setTextColor(C_CYAN); canvas->print(sensNames[tm.encSens % 3]);
+        break;
+      }
+      case 20: canvas->setTextColor(C_MUTED); canvas->print("click"); break;
+      case 21: canvas->setTextColor(C_MUTED); canvas->print("click"); break;
+      case 22: canvas->setTextColor(tm.calFlags & CAL_LEVEL_OK ? C_GREEN : C_MUTED); canvas->print(tm.calFlags & CAL_LEVEL_OK ? "done" : "click"); break;
+      case 23: canvas->setTextColor(C_MUTED); canvas->print("click"); break;
+      case 24: canvas->setTextColor(C_GREEN); canvas->print("SAVE NVS"); break;
+      case 25: canvas->setTextColor(C_MUTED); canvas->print("close"); break;
       default: break;
     }
   }
@@ -437,7 +492,16 @@ void DisplayUI::drawStrip(const RemoteTelemetry &tm) {
   for (int i = 0; i < 4; i++) v += abs(tm.wheelMmS[i]) / 4.0f;
   snprintf(buf[0], sizeof buf[0], "SPD %4.2f  BAT %.1fV", v / 1000.0f, tm.vbat);
   snprintf(buf[1], sizeof buf[1], "HDG %3d  %-8s", tm.roverHeading, MODE_NAMES_REMOTE[tm.roverMode % MODE_COUNT]);
-  snprintf(buf[2], sizeof buf[2], "TOF %3dcm US %3dcm", tm.tofMm[0] / 10, tm.ultraMm / 10);
+  char usStr[8];
+  if (tm.ultraMm > 0) snprintf(usStr, sizeof usStr, "%3dcm", tm.ultraMm / 10);
+  else snprintf(usStr, sizeof usStr, " --- ");
+
+  char tofStr[8];
+  uint16_t minTof = (tm.tofMm[0] > 0 && tm.tofMm[1] > 0) ? min(tm.tofMm[0], tm.tofMm[1]) : max(tm.tofMm[0], tm.tofMm[1]);
+  if (minTof > 0) snprintf(tofStr, sizeof tofStr, "%3dcm", minTof / 10);
+  else snprintf(tofStr, sizeof tofStr, " --- ");
+
+  snprintf(buf[2], sizeof buf[2], "TOF %s US %s", tofStr, usStr);
 
   tft->setTextSize(2);
   for (int i = 0; i < 3; i++) {
@@ -478,24 +542,42 @@ void DisplayUI::render(const RemoteTelemetry &tm) {
 int DisplayUI::menuSelect(RemoteTelemetry &tm) {
   if (!inMenu) return ACT_NONE;
   switch (menuIndex) {
-    case 0: tm.roverMode = (tm.roverMode + 1) % MODE_COUNT; return ACT_MODE;
-    case 1: tm.ctrlSource = (tm.ctrlSource == CTRL_JOYSTICK) ? CTRL_AIR_REMOTE : CTRL_JOYSTICK; return ACT_CTRL;
-    case 2: tm.speedLimit = (tm.speedLimit >= 100) ? 10 : tm.speedLimit + 5; return ACT_SPEED;
-    case 3: tm.deadzonePct = (tm.deadzonePct >= 20) ? 2 : tm.deadzonePct + 2; return ACT_DEADZONE;
-    case 4: tm.expoPct = (tm.expoPct >= 90) ? 0 : tm.expoPct + 15; return ACT_EXPO;
-    case 5: tm.trimFwd = (tm.trimFwd >= 10) ? -10 : tm.trimFwd + 2; return ACT_TRIM_FWD;
-    case 6: tm.trimStrafe = (tm.trimStrafe >= 10) ? -10 : tm.trimStrafe + 2; return ACT_TRIM_STR;
-    case 7: tm.trimYaw = (tm.trimYaw >= 10) ? -10 : tm.trimYaw + 2; return ACT_TRIM_YAW;
-    case 8: tm.gyroSmoothing = (tm.gyroSmoothing >= 10) ? 1 : tm.gyroSmoothing + 1; return ACT_GYRO_SMOOTH;
-    case 9: tm.brightness = (tm.brightness >= 100) ? 10 : tm.brightness + 10; setBacklight(tm.brightness); return ACT_BRIGHT;
-    case 10: tm.hapticsOn = !tm.hapticsOn; return ACT_HAPTICS;
-    case 11: tm.hapticStrength = (tm.hapticStrength >= 100) ? 10 : tm.hapticStrength + 10; return ACT_HAPTIC_STR;
-    case 12: return ACT_CAL_JOY;
-    case 13: return ACT_CAL_AIR;
-    case 14: return ACT_CAL_LEVEL;
-    case 15: return ACT_ZERO_YAW;
-    case 16: return ACT_SAVE_SETTINGS;
-    case 17: inMenu = false; return ACT_EXIT;
+    case 0:
+      tm.roverMode = (tm.roverMode + 1) % MODE_COUNT;
+      tm.semiAuto = (tm.roverMode == MODE_AUTO);
+      return ACT_MODE;
+    case 1:
+      tm.semiAuto = !tm.semiAuto;
+      tm.roverMode = tm.semiAuto ? MODE_AUTO : MODE_TANK;
+      return ACT_SEMI_AUTO;
+    case 2:
+      tm.autoSpeed = (tm.autoSpeed >= 75) ? 25 : tm.autoSpeed + 10;
+      return ACT_AUTO_SPEED;
+    case 3:
+      tm.crashProtect = !tm.crashProtect;
+      return ACT_CRASH_PROT;
+    case 4: tm.ctrlSource = (tm.ctrlSource == CTRL_JOYSTICK) ? CTRL_AIR_REMOTE : CTRL_JOYSTICK; return ACT_CTRL;
+    case 5: tm.airAxis = (tm.airAxis + 1) % 6; return ACT_AIR_AXIS;
+    case 6: tm.speedLimit = (tm.speedLimit >= 100) ? 10 : tm.speedLimit + 5; return ACT_SPEED;
+    case 7: tm.deadzonePct = (tm.deadzonePct >= 20) ? 2 : tm.deadzonePct + 2; return ACT_DEADZONE;
+    case 8: tm.expoPct = (tm.expoPct >= 90) ? 0 : tm.expoPct + 15; return ACT_EXPO;
+    case 9: tm.trimFwd = (tm.trimFwd >= 10) ? -10 : tm.trimFwd + 2; return ACT_TRIM_FWD;
+    case 10: tm.trimStrafe = (tm.trimStrafe >= 10) ? -10 : tm.trimStrafe + 2; return ACT_TRIM_STR;
+    case 11: tm.trimYaw = (tm.trimYaw >= 10) ? -10 : tm.trimYaw + 2; return ACT_TRIM_YAW;
+    case 12: tm.gyroSmoothing = (tm.gyroSmoothing >= 10) ? 1 : tm.gyroSmoothing + 1; return ACT_GYRO_SMOOTH;
+    case 13: tm.brightness = (tm.brightness >= 100) ? 10 : tm.brightness + 10; setBacklight(tm.brightness); return ACT_BRIGHT;
+    case 14: tm.hapticsOn = !tm.hapticsOn; return ACT_HAPTICS;
+    case 15: tm.hapticStrength = (tm.hapticStrength >= 100) ? 10 : tm.hapticStrength + 10; return ACT_HAPTIC_STR;
+    case 16: tm.encMode = (tm.encMode + 1) % 3; return ACT_ENC_MODE;
+    case 17: tm.encRepeat = (tm.encRepeat + 1) % 4; return ACT_ENC_REPEAT;
+    case 18: tm.encDtPin = (tm.encDtPin + 1) % 3; return ACT_ENC_PIN;
+    case 19: tm.encSens = (tm.encSens + 1) % 3; return ACT_ENC_SENS;
+    case 20: return ACT_CAL_JOY;
+    case 21: return ACT_CAL_AIR;
+    case 22: return ACT_CAL_LEVEL;
+    case 23: return ACT_ZERO_YAW;
+    case 24: return ACT_SAVE_SETTINGS;
+    case 25: inMenu = false; return ACT_EXIT;
   }
   return ACT_NONE;
 }
@@ -506,41 +588,72 @@ int DisplayUI::menuAdjust(RemoteTelemetry &tm, int dir) {
     case 0: // Drive Mode
       if (dir > 0) tm.roverMode = (tm.roverMode + 1) % MODE_COUNT;
       else tm.roverMode = (tm.roverMode + MODE_COUNT - 1) % MODE_COUNT;
+      tm.semiAuto = (tm.roverMode == MODE_AUTO);
       return ACT_MODE;
-    case 1: // Control Input
+    case 1: // Semi-Auto Mode
+      tm.semiAuto = (dir > 0);
+      tm.roverMode = tm.semiAuto ? MODE_AUTO : MODE_TANK;
+      return ACT_SEMI_AUTO;
+    case 2: // Auto Speed
+      tm.autoSpeed = constrain((int)tm.autoSpeed + dir * 5, 20, 80);
+      return ACT_AUTO_SPEED;
+    case 3: // Crash Protect
+      tm.crashProtect = (dir > 0);
+      return ACT_CRASH_PROT;
+    case 4: // Control Input
       tm.ctrlSource = (tm.ctrlSource == CTRL_JOYSTICK) ? CTRL_AIR_REMOTE : CTRL_JOYSTICK;
       return ACT_CTRL;
-    case 2: // Speed Limit
+    case 5: // Air Gyro Axis
+      if (dir > 0) tm.airAxis = (tm.airAxis + 1) % 6;
+      else tm.airAxis = (tm.airAxis + 5) % 6;
+      return ACT_AIR_AXIS;
+    case 6: // Speed Limit
       tm.speedLimit = constrain((int)tm.speedLimit + dir * 5, 10, 100);
       return ACT_SPEED;
-    case 3: // Deadzone
+    case 7: // Deadzone
       tm.deadzonePct = constrain((int)tm.deadzonePct + dir * 2, 2, 20);
       return ACT_DEADZONE;
-    case 4: // Expo Curve
+    case 8: // Expo Curve
       tm.expoPct = constrain((int)tm.expoPct + dir * 15, 0, 90);
       return ACT_EXPO;
-    case 5: // Trim Fwd
+    case 9: // Trim Fwd
       tm.trimFwd = constrain((int)tm.trimFwd + dir * 2, -10, 10);
       return ACT_TRIM_FWD;
-    case 6: // Trim Strafe
+    case 10: // Trim Strafe
       tm.trimStrafe = constrain((int)tm.trimStrafe + dir * 2, -10, 10);
       return ACT_TRIM_STR;
-    case 7: // Trim Yaw
+    case 11: // Trim Yaw
       tm.trimYaw = constrain((int)tm.trimYaw + dir * 2, -10, 10);
       return ACT_TRIM_YAW;
-    case 8: // Gyro Smoothing
+    case 12: // Gyro Smoothing
       tm.gyroSmoothing = constrain((int)tm.gyroSmoothing + dir * 1, 1, 10);
       return ACT_GYRO_SMOOTH;
-    case 9: // Brightness
+    case 13: // Brightness
       tm.brightness = constrain((int)tm.brightness + dir * 10, 10, 100);
       setBacklight(tm.brightness);
       return ACT_BRIGHT;
-    case 10: // Haptics
+    case 14: // Haptics
       tm.hapticsOn = (dir > 0);
       return ACT_HAPTICS;
-    case 11: // Haptic Strength
+    case 15: // Haptic Strength
       tm.hapticStrength = constrain((int)tm.hapticStrength + dir * 10, 10, 100);
       return ACT_HAPTIC_STR;
+    case 16: // Enc Mode
+      if (dir > 0) tm.encMode = (tm.encMode + 1) % 3;
+      else tm.encMode = (tm.encMode + 2) % 3;
+      return ACT_ENC_MODE;
+    case 17: // Enc Repeat
+      if (dir > 0) tm.encRepeat = (tm.encRepeat + 1) % 4;
+      else tm.encRepeat = (tm.encRepeat + 3) % 4;
+      return ACT_ENC_REPEAT;
+    case 18: // Enc DT Pin
+      if (dir > 0) tm.encDtPin = (tm.encDtPin + 1) % 3;
+      else tm.encDtPin = (tm.encDtPin + 2) % 3;
+      return ACT_ENC_PIN;
+    case 19: // Enc Sens
+      if (dir > 0) tm.encSens = (tm.encSens + 1) % 3;
+      else tm.encSens = (tm.encSens + 2) % 3;
+      return ACT_ENC_SENS;
     default:
       break;
   }

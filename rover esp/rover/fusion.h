@@ -11,10 +11,11 @@ public:
   float beta = 0.08f;
   float gyroBias[3] = {0, 0, 0};
   float magMin[3] = {1e9f, 1e9f, 1e9f}, magMax[3] = {-1e9f, -1e9f, -1e9f};
-  float rollTrim = 0, pitchTrim = 0;
+  float rollTrim = 0, pitchTrim = 0, yawZero = 0;
   bool gyroCal = false, magCal = false, levelCal = false, stationary = false;
   float magCoverage = 0;
   float gyroRaw[3] = {0, 0, 0};
+  float gz = 0; // bias-compensated yaw rate (rad/s)
 
   void load(Preferences &p) {
     p.begin("fusion", true);
@@ -82,6 +83,7 @@ public:
     detectStationary(g, a, dt);
     float gx = g[0] - gyroBias[0], gy = g[1] - gyroBias[1], gz = g[2] - gyroBias[2];
     if (stationary && fabsf(gx) < 0.01f && fabsf(gy) < 0.01f && fabsf(gz) < 0.01f) gx = gy = gz = 0;
+    this->gz = gz;
 
     float m[3] = {0, 0, 0};
     bool useMag = false;
@@ -124,6 +126,9 @@ public:
 
   void zeroYaw() {
     float r, p, y; euler(r, p, y);
+    yawZero += y;
+    while (yawZero > 180.0f) yawZero -= 360.0f;
+    while (yawZero < -180.0f) yawZero += 360.0f;
     float h = -y * DEG_TO_RAD * 0.5f;
     float c = cosf(h), s = sinf(h);
     float n0 = c*q0 - s*q3, n1 = c*q1 - s*q2, n2 = c*q2 + s*q1, n3 = c*q3 + s*q0;
@@ -134,6 +139,18 @@ public:
   void calibrateLevel(Preferences &p) {
     float r, pi, y; rollTrim = pitchTrim = 0; euler(r, pi, y);
     rollTrim = r; pitchTrim = pi; levelCal = true; save(p);
+  }
+
+  void updateMagCoverage() {
+    float minSpan = 1e9f;
+    for (int i = 0; i < 3; i++) minSpan = fminf(minSpan, magMax[i] - magMin[i]);
+    float maxSpan = 0;
+    for (int i = 0; i < 3; i++) maxSpan = fmaxf(maxSpan, magMax[i] - magMin[i]);
+    // Heading only needs X/Y rotation; Z spans widen only when tilted
+    float xy = fminf(magMax[0] - magMin[0], magMax[1] - magMin[1]);
+    magCoverage = maxSpan > 1 ? constrain(xy / maxSpan, 0.0f, 1.0f) : 0;
+    magCal = (magMax[0] - magMin[0] > 40) && (magMax[1] - magMin[1] > 40) && magCoverage > 0.5f;
+    (void)minSpan;
   }
 
 private:
@@ -168,18 +185,6 @@ private:
     }
     updateMagCoverage();
     if (magCal && millis() - lastSave > 60000) { lastSave = millis(); }
-  }
-
-  void updateMagCoverage() {
-    float minSpan = 1e9f;
-    for (int i = 0; i < 3; i++) minSpan = fminf(minSpan, magMax[i] - magMin[i]);
-    float maxSpan = 0;
-    for (int i = 0; i < 3; i++) maxSpan = fmaxf(maxSpan, magMax[i] - magMin[i]);
-    // Heading only needs X/Y rotation; Z spans widen only when tilted
-    float xy = fminf(magMax[0] - magMin[0], magMax[1] - magMin[1]);
-    magCoverage = maxSpan > 1 ? constrain(xy / maxSpan, 0.0f, 1.0f) : 0;
-    magCal = (magMax[0] - magMin[0] > 100) && (magMax[1] - magMin[1] > 100) && magCoverage > 0.7f;
-    (void)minSpan;
   }
 
   void integrate(float gx, float gy, float gz, float dt) {

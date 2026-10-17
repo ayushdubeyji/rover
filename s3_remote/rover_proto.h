@@ -23,11 +23,23 @@ enum DriveMode : uint8_t {
   MODE_DRIFT,
   MODE_ORBIT,
   MODE_TANK,
+  MODE_AUTO,
   MODE_COUNT
 };
 
-#define FLAG_TURBO 0x01
-#define FLAG_CRAWL 0x02
+#define FLAG_TURBO     0x01
+#define FLAG_CRAWL     0x02
+#define FLAG_AUTO      0x04
+#define FLAG_CRASH_OFF 0x08
+#define FLAG_IMPACT    0x10
+
+enum ImpactDir : uint8_t {
+  IMPACT_NONE = 0,
+  IMPACT_FRONT = 1,
+  IMPACT_REAR = 2,
+  IMPACT_LEFT = 3,
+  IMPACT_RIGHT = 4
+};
 
 typedef struct __attribute__((packed)) {
   uint8_t magic;

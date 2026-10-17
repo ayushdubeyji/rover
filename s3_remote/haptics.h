@@ -33,47 +33,65 @@ static inline float haptSineBell(float t) {
   return sinf(t * 3.14159265f);
 }
 
+#include <esp_timer.h>
+
 class HapticEngine {
 public:
   bool enabled = true;
   uint8_t pin = 21;
-  uint8_t strength = 60; // 0 to 100% master intensity
+  uint8_t strength = 100; // 0 to 100% master intensity
 
   void begin(uint8_t hapticPin = 21) {
     pin = hapticPin;
     pinMode(pin, OUTPUT);
     digitalWrite(pin, LOW);
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
-    ledcAttach(pin, 1000, 8);
+    // Use dedicated Channel 4 (Timer 2) so Haptics NEVER shares Timer 0 with LCD_BL_PIN analogWrite!
+    ledcAttachChannel(pin, 2000, 8, 4);
     ledcWrite(pin, 0);
 #else
-    ledcSetup(0, 1000, 8);
-    ledcAttachPin(pin, 0);
-    ledcWrite(0, 0);
+    ledcSetup(4, 2000, 8);
+    ledcAttachPin(pin, 4);
+    ledcWrite(4, 0);
 #endif
-    _lastFreq = 1000;
+    _lastFreq = 2000;
+
+    // 500 Hz (2ms) hardware timer on Core 0 so haptics never lag or stall during 3D SPI rendering
+    if (!_timer) {
+      esp_timer_create_args_t args = {};
+      args.callback = &_timerCb;
+      args.arg = this;
+      args.dispatch_method = ESP_TIMER_TASK;
+      args.name = "hapt_tmr";
+      if (esp_timer_create(&args, &_timer) == ESP_OK) {
+        esp_timer_start_periodic(_timer, 2000); // 2000 us = 2 ms precision
+      }
+    }
   }
 
   void play(HapticEffect effect) {
     if (!enabled || strength == 0) return;
     _currentFx = effect;
     _fxStart = millis();
+    update(); // Immediate t=0ms hardware kick (zero loop latency)
   }
 
   void update() {
-    if (_currentFx == FX_NONE) return;
+    HapticEffect fx = _currentFx;
+    if (fx == FX_NONE) return;
     unsigned long elapsed = millis() - _fxStart;
-    uint8_t duty = 0;
-    uint32_t freq = 220; // Default gentle resonant vibration frequency
+    uint8_t duty = 0;     // 255 = 100% pure DC overdrive spin-up, 160..185 = max-dB square wave tone
+    uint32_t freq = 250;
 
-    switch (_currentFx) {
+    switch (fx) {
       case FX_TICK: {
-        // Soft organic rotary notch (35ms): Crisp 1600 Hz blip, toned-down duty
-        const unsigned long dur = 35;
-        if (elapsed < dur) {
-          freq = 1600;
-          float u = (float)elapsed / (float)dur;
-          duty = (uint8_t)(95.0f * haptSineBell(u));
+        // Instant 2500Hz acoustic click (14ms) + 50ms 100% DC overdrive physical kick
+        if (elapsed < 14) {
+          freq = 2500;
+          duty = 170;
+        } else if (elapsed < 64) {
+          freq = 250;
+          duty = 255; // 100% DC overdrive spin-up
         } else {
           _currentFx = FX_NONE;
         }
@@ -81,13 +99,16 @@ public:
       }
 
       case FX_CLICK: {
-        // Two-tone pleasant chime (70ms): C6 (1046Hz) -> E6 (1318Hz)
-        if (elapsed < 30) {
-          freq = 1046;
-          duty = (uint8_t)(115.0f * haptSineBell((float)elapsed / 30.0f));
-        } else if (elapsed < 70) {
-          freq = 1318;
-          duty = (uint8_t)(125.0f * haptSineBell((float)(elapsed - 30) / 40.0f));
+        // 55ms 100% DC physical punch + crisp 2-tone high-dB chime (1760Hz -> 2400Hz)
+        if (elapsed < 55) {
+          freq = 250;
+          duty = 255;
+        } else if (elapsed < 80) {
+          freq = 1760;
+          duty = 170;
+        } else if (elapsed < 110) {
+          freq = 2400;
+          duty = 175;
         } else {
           _currentFx = FX_NONE;
         }
@@ -95,16 +116,19 @@ public:
       }
 
       case FX_DOUBLE_CLICK: {
-        // 3-note ascending arpeggio (110ms): C5 (523Hz) -> E5 (659Hz) -> G5 (784Hz)
-        if (elapsed < 35) {
-          freq = 523;
-          duty = (uint8_t)(105.0f * haptSineBell((float)elapsed / 35.0f));
-        } else if (elapsed < 70) {
-          freq = 659;
-          duty = (uint8_t)(115.0f * haptSineBell((float)(elapsed - 35) / 35.0f));
-        } else if (elapsed < 110) {
-          freq = 784;
-          duty = (uint8_t)(125.0f * haptSineBell((float)(elapsed - 70) / 40.0f));
+        // Double 100% DC physical punch interleaved with ascending chime
+        if (elapsed < 50) {
+          freq = 250;
+          duty = 255;
+        } else if (elapsed < 75) {
+          freq = 1568;
+          duty = 170;
+        } else if (elapsed < 120) {
+          freq = 250;
+          duty = 255;
+        } else if (elapsed < 155) {
+          freq = 2349;
+          duty = 175;
         } else {
           _currentFx = FX_NONE;
         }
@@ -112,16 +136,19 @@ public:
       }
 
       case FX_MODE_SWITCH: {
-        // Melodic drive mode fanfare (130ms): D5 (587Hz) -> A5 (880Hz) -> D6 (1175Hz)
-        if (elapsed < 40) {
-          freq = 587;
-          duty = (uint8_t)(110.0f * haptSineBell((float)elapsed / 40.0f));
-        } else if (elapsed < 80) {
-          freq = 880;
-          duty = (uint8_t)(125.0f * haptSineBell((float)(elapsed - 40) / 40.0f));
-        } else if (elapsed < 130) {
-          freq = 1175;
-          duty = (uint8_t)(135.0f * haptSineBell((float)(elapsed - 80) / 50.0f));
+        // Strong 65ms 100% DC punch + 3-note bright fanfare (D6 -> A6 -> D7)
+        if (elapsed < 65) {
+          freq = 250;
+          duty = 255;
+        } else if (elapsed < 95) {
+          freq = 1318;
+          duty = 170;
+        } else if (elapsed < 125) {
+          freq = 1760;
+          duty = 170;
+        } else if (elapsed < 165) {
+          freq = 2489;
+          duty = 175;
         } else {
           _currentFx = FX_NONE;
         }
@@ -129,19 +156,22 @@ public:
       }
 
       case FX_STARTUP: {
-        // 4-note boot chime (220ms): C5 -> E5 -> G5 -> C6
-        if (elapsed < 50) {
-          freq = 523;
-          duty = 95;
-        } else if (elapsed < 100) {
-          freq = 659;
-          duty = 110;
-        } else if (elapsed < 150) {
-          freq = 784;
-          duty = 120;
-        } else if (elapsed < 220) {
-          freq = 1046;
-          duty = (uint8_t)(130.0f * (1.0f - (float)(elapsed - 150) / 70.0f));
+        // 80ms 100% DC wakeup thump + 4-note loud boot fanfare
+        if (elapsed < 80) {
+          freq = 250;
+          duty = 255;
+        } else if (elapsed < 120) {
+          freq = 1318;
+          duty = 170;
+        } else if (elapsed < 160) {
+          freq = 1568;
+          duty = 170;
+        } else if (elapsed < 200) {
+          freq = 1976;
+          duty = 175;
+        } else if (elapsed < 260) {
+          freq = 2637;
+          duty = 175;
         } else {
           _currentFx = FX_NONE;
         }
@@ -149,13 +179,16 @@ public:
       }
 
       case FX_SUCCESS: {
-        // Joyful bright confirmation chime (100ms): G5 (784Hz) -> C6 (1046Hz)
-        if (elapsed < 40) {
-          freq = 784;
-          duty = (uint8_t)(110.0f * haptSineBell((float)elapsed / 40.0f));
-        } else if (elapsed < 100) {
-          freq = 1046;
-          duty = (uint8_t)(125.0f * haptSineBell((float)(elapsed - 40) / 60.0f));
+        // 60ms 100% DC punch + bright confirmation chime
+        if (elapsed < 60) {
+          freq = 250;
+          duty = 255;
+        } else if (elapsed < 95) {
+          freq = 1760;
+          duty = 170;
+        } else if (elapsed < 140) {
+          freq = 2637;
+          duty = 175;
         } else {
           _currentFx = FX_NONE;
         }
@@ -163,11 +196,13 @@ public:
       }
 
       case FX_CLUTCH_ENGAGE: {
-        // Push-to-gyrate clutch engage: high confidence chirp (30ms)
-        const unsigned long dur = 30;
-        if (elapsed < dur) {
-          freq = 1400;
-          duty = (uint8_t)(110.0f * haptSineBell((float)elapsed / (float)dur));
+        // 55ms 100% DC kick + 2200Hz chirp
+        if (elapsed < 55) {
+          freq = 250;
+          duty = 255;
+        } else if (elapsed < 80) {
+          freq = 2200;
+          duty = 175;
         } else {
           _currentFx = FX_NONE;
         }
@@ -175,11 +210,13 @@ public:
       }
 
       case FX_CLUTCH_RELEASE: {
-        // Push-to-gyrate clutch release: soft disengage pip (25ms)
-        const unsigned long dur = 25;
-        if (elapsed < dur) {
-          freq = 700;
-          duty = (uint8_t)(85.0f * haptSineBell((float)elapsed / (float)dur));
+        // 40ms 100% DC kick + 1400Hz pip
+        if (elapsed < 40) {
+          freq = 250;
+          duty = 255;
+        } else if (elapsed < 65) {
+          freq = 1400;
+          duty = 165;
         } else {
           _currentFx = FX_NONE;
         }
@@ -187,12 +224,22 @@ public:
       }
 
       case FX_THROTTLE_BOOST: {
-        // Smooth spool-up rising frequency chirp (200ms)
-        const unsigned long dur = 200;
-        if (elapsed < dur) {
-          float u = (float)elapsed / (float)dur;
-          freq = (uint32_t)(380.0f + 620.0f * u); // 380 Hz -> 1000 Hz sweep
-          duty = (uint8_t)(135.0f * haptSmootherStep(u));
+        // 90ms 100% DC full-power kick + 4 discrete stepped turbo notes (no continuous freq thrashing)
+        if (elapsed < 90) {
+          freq = 250;
+          duty = 255;
+        } else if (elapsed < 115) {
+          freq = 1400;
+          duty = 170;
+        } else if (elapsed < 140) {
+          freq = 1800;
+          duty = 170;
+        } else if (elapsed < 165) {
+          freq = 2200;
+          duty = 175;
+        } else if (elapsed < 195) {
+          freq = 2637;
+          duty = 175;
         } else {
           _currentFx = FX_NONE;
         }
@@ -200,13 +247,11 @@ public:
       }
 
       case FX_BRAKE: {
-        // Dynamic braking bite (180ms): gentle ABS vibration flutter
-        const unsigned long dur = 180;
-        if (elapsed < dur) {
-          freq = 200; // gentle resonance
-          float u = (float)elapsed / (float)dur;
-          float flutter = 0.75f + 0.25f * cosf((float)elapsed * 0.12f);
-          duty = (uint8_t)(130.0f * (1.0f - u) * flutter);
+        // Heavy pulsed 100% DC ABS mechanical rumble (3 hard kicks)
+        if (elapsed < 190) {
+          unsigned long t = elapsed % 65;
+          freq = 250;
+          duty = (t < 50) ? 255 : 0;
         } else {
           _currentFx = FX_NONE;
         }
@@ -214,11 +259,16 @@ public:
       }
 
       case FX_ALERT: {
-        // Warning siren (260ms): alternating 880Hz / 587Hz
+        // Alternating 100% DC physical shake + 2400Hz siren
         if (elapsed < 260) {
           unsigned long t = elapsed % 130;
-          freq = (t < 65) ? 880 : 587;
-          duty = 115;
+          if (t < 65) {
+            freq = 250;
+            duty = 255;
+          } else {
+            freq = 2400;
+            duty = 175;
+          }
         } else {
           _currentFx = FX_NONE;
         }
@@ -226,11 +276,18 @@ public:
       }
 
       case FX_ESTOP: {
-        // Rapid alarm beeps (280ms)
-        freq = 1760;
-        unsigned long t = elapsed % 100;
+        // Urgent alternating 100% DC slam + 2637Hz alarm
         if (elapsed < 280) {
-          duty = (t < 55) ? 135 : 0;
+          unsigned long t = elapsed % 95;
+          if (t < 50) {
+            freq = 250;
+            duty = 255;
+          } else if (t < 85) {
+            freq = 2637;
+            duty = 175;
+          } else {
+            duty = 0;
+          }
         } else {
           _currentFx = FX_NONE;
         }
@@ -243,21 +300,25 @@ public:
         break;
     }
 
-    // Apply master strength scaling and safety clamp
-    uint8_t scaledDuty = 0;
+    uint32_t scaledDuty = 0;
     if (enabled && strength > 0 && duty > 0) {
-      scaledDuty = (uint8_t)(((uint32_t)duty * strength) / 100);
-      if (scaledDuty < 4 && duty > 0 && strength > 0) scaledDuty = 4;
+      if (duty == 255) {
+        // Physical overdrive phase: saturate transistor at 256 (100% solid DC) when strength >= 90%
+        scaledDuty = (strength >= 90) ? 256 : (155 + strength);
+      } else {
+        // Acoustic square-wave phase: keep duty near 55-68% (140-175) for maximum AC decibel output
+        scaledDuty = ((uint32_t)duty * (40 + (strength * 60) / 100)) / 100;
+      }
     }
 
-    if (scaledDuty > 0) {
+    if (scaledDuty > 0 && scaledDuty < 256) {
       _setFreq(freq);
     }
 
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
     ledcWrite(pin, scaledDuty);
 #else
-    ledcWrite(0, scaledDuty);
+    ledcWrite(4, scaledDuty);
 #endif
   }
 
@@ -266,14 +327,19 @@ public:
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
     ledcWrite(pin, 0);
 #else
-    ledcWrite(0, 0);
+    ledcWrite(4, 0);
 #endif
   }
 
 private:
-  HapticEffect _currentFx = FX_NONE;
-  unsigned long _fxStart = 0;
-  uint32_t _lastFreq = 1000;
+  volatile HapticEffect _currentFx = FX_NONE;
+  volatile unsigned long _fxStart = 0;
+  uint32_t _lastFreq = 2000;
+  esp_timer_handle_t _timer = nullptr;
+
+  static void _timerCb(void* arg) {
+    ((HapticEngine*)arg)->update();
+  }
 
   void _setFreq(uint32_t freq) {
     if (freq == _lastFreq || freq == 0) return;
@@ -281,7 +347,7 @@ private:
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
     ledcChangeFrequency(pin, freq, 8);
 #else
-    ledcSetup(0, freq, 8);
+    ledcSetup(4, freq, 8);
 #endif
   }
 };

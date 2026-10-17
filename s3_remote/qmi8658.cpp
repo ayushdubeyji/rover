@@ -140,7 +140,7 @@ void QMI8658Driver::getDriveTilt(int8_t &xOut, int8_t &yOut, float deadbandDeg, 
   // Right tilt -> Positive X (Right strafe)
   // Left tilt -> Negative X (Left strafe)
   float p = pitch;
-  float r = roll;
+  float r = -roll; // Negate roll so tilting right produces positive X (Right strafe/turn)
 
   // Apply deadband
   if (fabsf(p) < deadbandDeg) p = 0;
