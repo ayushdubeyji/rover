@@ -1,0 +1,1865 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Mecanum Robot Live Telemetry & Control</title>
+    <style>
+        :root {
+            --bg-color: #0b0f19;
+            --card-bg: #141b2d;
+            --accent: #3b82f6;
+            --accent-green: #10b981;
+            --accent-amber: #f59e0b;
+            --accent-red: #ef4444;
+            --accent-purple: #a855f7;
+            --text-main: #f3f4f6;
+            --text-dim: #9ca3af;
+            --border: #1f293d;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            overflow-x: hidden;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+        }
+
+        header {
+            padding: 12px 20px;
+            background: #0f172a;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            font-size: 1.1rem;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .badge {
+            background: #1e293b;
+            padding: 4px 10px;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            border: 1px solid var(--border);
+        }
+
+        .badge.online {
+            border-color: var(--accent-green);
+            color: var(--accent-green);
+        }
+
+        .badge.offline {
+            border-color: var(--accent-red);
+            color: var(--accent-red);
+        }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 16px;
+            padding: 16px;
+            flex: 1;
+        }
+
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
+        }
+
+        .card-title {
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-dim);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        /* Mode Selector Buttons */
+        .mode-buttons {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+        }
+
+        .btn-mode {
+            background: #1e293b;
+            color: var(--text-dim);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 10px 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-align: center;
+        }
+
+        .btn-mode.active {
+            background: var(--accent);
+            color: #ffffff;
+            border-color: #60a5fa;
+            box-shadow: 0 0 12px rgba(59, 130, 246, 0.4);
+        }
+
+        /* Dual Virtual Joysticks */
+        .joystick-container {
+            display: flex;
+            justify-content: space-around;
+            align-items: center;
+            height: 220px;
+        }
+
+        .joystick-zone {
+            width: 140px;
+            height: 140px;
+            background: #0f172a;
+            border-radius: 50%;
+            border: 2px dashed #334155;
+            position: relative;
+            touch-action: none;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .joystick-knob {
+            width: 50px;
+            height: 50px;
+            background: var(--accent);
+            border-radius: 50%;
+            position: absolute;
+            box-shadow: 0 0 10px rgba(59, 130, 246, 0.6);
+            pointer-events: none;
+            transition: transform 0.05s ease-out;
+        }
+
+        .joystick-label {
+            position: absolute;
+            bottom: -24px;
+            font-size: 0.7rem;
+            color: var(--text-dim);
+            text-align: center;
+            width: 100%;
+        }
+
+        /* Telemetry Readouts */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+        }
+
+        .stat-box {
+            background: #0f172a;
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid #1e293b;
+        }
+
+        .stat-value {
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: #38bdf8;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .stat-label {
+            font-size: 0.65rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+        }
+
+        /* Charts & Canvas */
+        .chart-box {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.72rem;
+            color: var(--text-dim);
+        }
+
+        .legend-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 4px;
+        }
+
+        canvas {
+            width: 100%;
+            height: 95px;
+            border-radius: 6px;
+            background: #0b0f19;
+            border: 1px solid #1e293b;
+        }
+
+        #compass-canvas {
+            height: 110px;
+            border: none;
+            background: transparent;
+        }
+
+        /* Pan / Tilt Sliders */
+        .slider-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .slider-group label {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            display: flex;
+            justify-content: space-between;
+        }
+
+        input[type="range"] {
+            -webkit-appearance: none;
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            background: #1e293b;
+            outline: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: var(--accent);
+            cursor: pointer;
+        }
+    </style>
+    <!-- Three.js + Local GLTFLoader + MeshoptDecoder -->
+    <script src="/static/js/three.min.js"></script>
+    <script src="/static/js/meshopt_decoder.js"></script>
+    <script src="/static/js/GLTFLoader.js"></script>
+    <script src="/static/js/OrbitControls.js"></script>
+</head>
+<body>
+
+    <header>
+        <div class="logo">
+            <span>⚡ MECANUM BOT</span>
+        </div>
+        <div id="status-badge" class="badge offline">DISCONNECTED</div>
+    </header>
+
+    <main class="dashboard-grid">
+        <!-- Card 1: Driving Mode Selector & Gimbal -->
+        <div class="card">
+            <div class="card-title">
+                <span>Motion Modes</span>
+                <span id="active-mode-label" style="color: var(--accent-green); font-weight: bold;">Holonomic</span>
+            </div>
+            <div class="mode-buttons">
+                <button class="btn-mode active" onclick="setMode(1)">1. Holonomic</button>
+                <button class="btn-mode" onclick="setMode(2)">2. Strafe</button>
+                <button class="btn-mode" onclick="setMode(3)">3. Pivot (Tank)</button>
+                <button class="btn-mode" onclick="setMode(4)">4. Diagonal</button>
+                <button class="btn-mode" onclick="setMode(5)">5. Head-Lock</button>
+                <button class="btn-mode" data-mode="7" onclick="setMode(7)" style="border-color: #10b981; color: #10b981;">7. Semi-Auto</button>
+                <button class="btn-mode" data-mode="9" onclick="setMode(9)" style="border-color: #f59e0b; color: #f59e0b;">9. Full Auto (VFH+)</button>
+            </div>
+            <div style="margin-top: 8px; display: flex; justify-content: space-between; align-items: center;">
+                <span style="font-size: 0.78rem; color: #94a3b8;">Crash Protection (±32° ToF + 0° US)</span>
+                <button id="btn-crash-prot" onclick="toggleCrashProt()" style="background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid #10b981; padding: 4px 10px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; cursor: pointer;">ON (ALL MODES)</button>
+            </div>
+
+            <!-- Pan / Tilt Controls -->
+            <div class="card-title" style="margin-top: 10px;">Gimbal Servos</div>
+            <div class="slider-group">
+                <label><span>Pan: GP16</span><span id="pan-val">1500 us</span></label>
+                <input type="range" id="pan-slider" min="1000" max="2000" value="1500" oninput="updateGimbal()">
+            </div>
+            <div class="slider-group">
+                <label><span>Tilt: GP17</span><span id="tilt-val">1500 us</span></label>
+                <input type="range" id="tilt-slider" min="1000" max="2000" value="1500" oninput="updateGimbal()">
+            </div>
+        </div>
+
+        
+        <!-- Card 1.5: Dedicated Precision & Finer Controls -->
+        <div class="card">
+            <div class="card-title" style="display: flex; justify-content: space-between; align-items: center;">
+                <span>Precision & Finer Controls</span>
+                <span id="trim-status" style="font-size: 0.72rem; color: var(--accent-green); font-family: monospace;">TRIM BALANCED</span>
+            </div>
+            
+            <!-- Speed Limit Fine Adjustment -->
+            <div class="control-row" style="margin-bottom: 10px;">
+                <label style="display: flex; justify-content: space-between; font-size: 0.78rem;">
+                    <span>Speed Ceiling (Fine 5% Steps):</span>
+                    <span id="speed-limit-val" style="color: var(--accent-green); font-weight: bold;">60%</span>
+                </label>
+                <input type="range" id="speed-limit-slider" min="10" max="100" step="5" value="60" oninput="updateSpeedLimit(this.value); this.blur();">
+            </div>
+
+            <!-- Steering & Strafe Fine Trim -->
+            <div style="background: rgba(15,23,42,0.6); padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border); margin-bottom: 10px;">
+                <div style="font-size: 0.72rem; color: var(--text-dim); margin-bottom: 6px; font-weight: 600; text-transform: uppercase;">Kinematic Trims (-20% .. +20%)</div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                    <div>
+                        <label style="font-size: 0.72rem; display: flex; justify-content: space-between;">
+                            <span>Fwd Trim</span><span id="trim-vx-val" style="color:#38bdf8;">0%</span>
+                        </label>
+                        <input type="range" id="trim-vx" min="-20" max="20" step="1" value="0" style="height:4px;" oninput="updateTrim('vx', this.value); this.blur();">
+                    </div>
+                    <div>
+                        <label style="font-size: 0.72rem; display: flex; justify-content: space-between;">
+                            <span>Strafe Trim</span><span id="trim-vy-val" style="color:#38bdf8;">0%</span>
+                        </label>
+                        <input type="range" id="trim-vy" min="-20" max="20" step="1" value="0" style="height:4px;" oninput="updateTrim('vy', this.value); this.blur();">
+                    </div>
+                </div>
+                <div style="margin-top: 6px;">
+                    <label style="font-size: 0.72rem; display: flex; justify-content: space-between;">
+                        <span>Yaw Trim (Gyro Drift Compensation)</span><span id="trim-vz-val" style="color:#38bdf8;">0%</span>
+                    </label>
+                    <input type="range" id="trim-vz" min="-20" max="20" step="1" value="0" style="height:4px;" oninput="updateTrim('vz', this.value); this.blur();">
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px;">
+                    <button onclick="resetTrims()" style="padding: 3px 8px; font-size: 0.7rem; background: #1e293b; color: #94a3b8; border: 1px solid #334155; border-radius: 4px; cursor: pointer;">Zero Trims</button>
+                    <span style="font-size: 0.68rem; color: #64748b;">Keyboard: WASD / Q,E Rotate</span>
+                </div>
+            </div>
+
+            <!-- Micro-Step Nudge Buttons -->
+            <div style="display: flex; gap: 6px; align-items: center; justify-content: space-between; margin-bottom: 10px;">
+                <div style="font-size: 0.72rem; color: var(--text-dim);">Micro-Docking:</div>
+                <div style="display: flex; gap: 4px;">
+                    <button class="mode-btn" style="padding: 4px 10px; font-size: 0.75rem;" onclick="microStep(0, 0.25, 0)">&larr; L</button>
+                    <button class="mode-btn" style="padding: 4px 10px; font-size: 0.75rem;" onclick="microStep(0.25, 0, 0)">&uarr; F</button>
+                    <button class="mode-btn" style="padding: 4px 10px; font-size: 0.75rem;" onclick="microStep(-0.25, 0, 0)">&darr; B</button>
+                    <button class="mode-btn" style="padding: 4px 10px; font-size: 0.75rem;" onclick="microStep(0, -0.25, 0)">&rarr; R</button>
+                </div>
+            </div>
+
+            <!-- Emergency Stop -->
+            <button onclick="triggerEStop()" style="width: 100%; padding: 8px; font-weight: bold; font-size: 0.85rem; letter-spacing: 1px; color: #fff; background: linear-gradient(135deg, #ef4444, #991b1b); border: 1px solid #f87171; border-radius: 6px; cursor: pointer; text-shadow: 0 1px 2px rgba(0,0,0,0.5); box-shadow: 0 2px 8px rgba(239,68,68,0.3);">
+                &#9888; EMERGENCY STOP (SPACE)
+            </button>
+        </div>
+
+        <!-- Card 2: Dual Virtual Joysticks -->
+        <div class="card">
+            <div class="card-title">Omnidirectional Control</div>
+            <div class="joystick-container">
+                <div class="joystick-zone" id="joy-trans">
+                    <div class="joystick-knob" id="knob-trans"></div>
+                    <div class="joystick-label">Translation (VX / VY)</div>
+                </div>
+                <div class="joystick-zone" id="joy-rot">
+                    <div class="joystick-knob" id="knob-rot"></div>
+                    <div class="joystick-label">Rotation (VZ)</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Card 3: Live Sensor Readings & Compass -->
+        <div class="card">
+            <div class="card-title">Fused Sensors & Odometry</div>
+            <div class="stats-grid">
+                <div class="stat-box">
+                    <div class="stat-value" id="val-pos" style="color: #4ade80;">X:0.00 Y:0.00m</div>
+                    <div class="stat-label">Live Odometry (X, Y)</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-value" id="val-yaw">0.0°</div>
+                    <div class="stat-label">Fused Yaw / Mag</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-value" id="val-range">US: -- ToF: --</div>
+                    <div class="stat-label">Range Sensors</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-value" id="val-motors">0, 0, 0, 0</div>
+                    <div class="stat-label">PWM (FL, FR, RL, RR)</div>
+                </div>
+            </div>
+            <!-- Dual Needle Heading Compass Dial -->
+            <canvas id="compass-canvas"></canvas>
+        </div>
+
+        <!-- Card 3.5: Pi 3B+ 5MP Optical Feed & UART Link HUD -->
+        <div class="card" id="card-pi-cam">
+            <div class="card-title" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" onclick="togglePiCamCard()">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span id="picam-status-dot" style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 8px #ef4444;"></span>
+                    <span>Pi 3B+ 5MP Feed & UART</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span id="picam-badge" class="badge offline" style="font-size: 0.7rem; padding: 2px 8px;">OFFLINE</span>
+                    <button id="picam-collapse-btn" style="background: none; border: none; color: var(--text-dim); font-size: 0.85rem; cursor: pointer;">▼</button>
+                </div>
+            </div>
+            <div id="picam-body" style="display: flex; flex-direction: column; gap: 10px;">
+                <!-- Stream container -->
+                <div style="position: relative; width: 100%; height: 240px; background: #070a13; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center;">
+                    <img id="picam-stream-img" src="http://192.168.0.103:8081/stream" alt="Pi Camera Feed" style="width: 100%; height: 100%; object-fit: contain; display: block;" onerror="handlePiCamError(this)">
+                    <div id="picam-placeholder" style="position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; background: rgba(11,15,25,0.95); color: #94a3b8; font-size: 0.8rem; gap: 6px;">
+                        <span style="font-size: 1.5rem;">📷</span>
+                        <span>Optical Feed Disconnected</span>
+                        <span style="font-size: 0.7rem; color: #64748b;">Waiting for Pi 3B+ @ 192.168.0.103:8081</span>
+                    </div>
+                    <!-- Live Video Overlay Badges -->
+                    <div style="position: absolute; top: 8px; left: 8px; display: flex; gap: 6px; z-index: 2;">
+                        <span id="picam-fps-badge" style="background: rgba(15,23,42,0.85); border: 1px solid #334155; padding: 2px 6px; border-radius: 4px; font-size: 0.68rem; color: #38bdf8; font-family: monospace;">0.0 FPS</span>
+                        <span id="picam-temp-badge" style="background: rgba(15,23,42,0.85); border: 1px solid #334155; padding: 2px 6px; border-radius: 4px; font-size: 0.68rem; color: #f59e0b; font-family: monospace;">-- °C</span>
+                    </div>
+                </div>
+
+                <!-- 3-Sector Visual Clearance Bars -->
+                <div style="background: rgba(15,23,42,0.6); padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <span style="font-size: 0.72rem; color: var(--text-dim); font-weight: 600; text-transform: uppercase;">Visual Clearance Sectors</span>
+                        <span id="picam-heading-sugg" style="font-size: 0.72rem; color: #38bdf8; font-family: monospace;">Clear: 0.0°</span>
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;">
+                        <div>
+                            <div style="display: flex; justify-content: space-between; font-size: 0.7rem; margin-bottom: 2px;">
+                                <span style="color: #94a3b8;">Left</span>
+                                <span id="picam-bar-l-val" style="color: #38bdf8; font-family: monospace;">2000mm</span>
+                            </div>
+                            <div style="background: #1e293b; height: 6px; border-radius: 3px; overflow: hidden;">
+                                <div id="picam-bar-l" style="width: 100%; height: 100%; background: #10b981; transition: width 0.15s, background-color 0.15s;"></div>
+                            </div>
+                        </div>
+                        <div>
+                            <div style="display: flex; justify-content: space-between; font-size: 0.7rem; margin-bottom: 2px;">
+                                <span style="color: #94a3b8;">Front</span>
+                                <span id="picam-bar-f-val" style="color: #38bdf8; font-family: monospace;">2000mm</span>
+                            </div>
+                            <div style="background: #1e293b; height: 6px; border-radius: 3px; overflow: hidden;">
+                                <div id="picam-bar-f" style="width: 100%; height: 100%; background: #10b981; transition: width 0.15s, background-color 0.15s;"></div>
+                            </div>
+                        </div>
+                        <div>
+                            <div style="display: flex; justify-content: space-between; font-size: 0.7rem; margin-bottom: 2px;">
+                                <span style="color: #94a3b8;">Right</span>
+                                <span id="picam-bar-r-val" style="color: #38bdf8; font-family: monospace;">2000mm</span>
+                            </div>
+                            <div style="background: #1e293b; height: 6px; border-radius: 3px; overflow: hidden;">
+                                <div id="picam-bar-r" style="width: 100%; height: 100%; background: #10b981; transition: width 0.15s, background-color 0.15s;"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Hardware Badges & UART counters -->
+                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; text-align: center;">
+                    <div style="background: rgba(15,23,42,0.6); padding: 5px; border-radius: 6px; border: 1px solid var(--border);">
+                        <div style="font-size: 0.65rem; color: var(--text-dim); text-transform: uppercase;">CPU</div>
+                        <div id="picam-hw-cpu" style="font-size: 0.75rem; color: #f3f4f6; font-family: monospace; font-weight: 600;">--%</div>
+                    </div>
+                    <div style="background: rgba(15,23,42,0.6); padding: 5px; border-radius: 6px; border: 1px solid var(--border);">
+                        <div style="font-size: 0.65rem; color: var(--text-dim); text-transform: uppercase;">RAM</div>
+                        <div id="picam-hw-ram" style="font-size: 0.75rem; color: #f3f4f6; font-family: monospace; font-weight: 600;">-- MB</div>
+                    </div>
+                    <div style="background: rgba(15,23,42,0.6); padding: 5px; border-radius: 6px; border: 1px solid var(--border);">
+                        <div style="font-size: 0.65rem; color: var(--text-dim); text-transform: uppercase;">UART TX</div>
+                        <div id="picam-hw-tx" style="font-size: 0.75rem; color: #38bdf8; font-family: monospace; font-weight: 600;">0</div>
+                    </div>
+                    <div style="background: rgba(15,23,42,0.6); padding: 5px; border-radius: 6px; border: 1px solid var(--border);">
+                        <div style="font-size: 0.65rem; color: var(--text-dim); text-transform: uppercase;">UART RX</div>
+                        <div id="picam-hw-rx" style="font-size: 0.75rem; color: #10b981; font-family: monospace; font-weight: 600;">0</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Card 3D: Live 3D Rover Digital Twin & Arena Simulator -->
+        <div class="card" style="grid-column: 1 / -1;">
+            <div class="card-title" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="display: flex; align-items: center; gap: 6px;">
+                        <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #38bdf8; box-shadow: 0 0 8px #38bdf8;"></span>
+                        Rover 3D Digital Twin & Arena Simulator
+                    </span>
+                    <span id="model-status" style="font-size: 0.75rem; color: #10b981; font-weight: normal;">Initializing 3D Engine...</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                    <button id="btn-sim-mode" style="background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid #10b981; padding: 4px 10px; border-radius: 4px; font-size: 0.72rem; cursor: pointer; transition: all 0.2s; font-weight: bold;">🎮 Simulator: ACTIVE</button>
+                    <button id="btn-demo-patrol" style="background: #1e293b; color: #a855f7; border: 1px solid #6b21a8; padding: 4px 10px; border-radius: 4px; font-size: 0.72rem; cursor: pointer; transition: all 0.2s;">✨ Auto-Demo</button>
+                    <button id="btn-cam-mode" style="background: #1e293b; color: #38bdf8; border: 1px solid #334155; padding: 4px 10px; border-radius: 4px; font-size: 0.72rem; cursor: pointer; transition: all 0.2s;">🎥 Chase Cam: OFF</button>
+                    <button id="btn-center-rover" style="background: #1e293b; color: #94a3b8; border: 1px solid #334155; padding: 4px 10px; border-radius: 4px; font-size: 0.72rem; cursor: pointer; transition: all 0.2s;">🎯 Center</button>
+                    <button id="btn-clear-trail" style="background: #1e293b; color: #94a3b8; border: 1px solid #334155; padding: 4px 10px; border-radius: 4px; font-size: 0.72rem; cursor: pointer; transition: all 0.2s;">🧹 Clear Trail</button>
+                </div>
+            </div>
+            <div id="rover-3d-container" style="width: 100%; height: 480px; border-radius: 8px; overflow: hidden; background: #070a13; position: relative;">
+                <div style="position: absolute; bottom: 8px; left: 12px; font-size: 0.72rem; color: #64748b; font-family: monospace; pointer-events: none; z-index: 5;">
+                    Orbit: Left Drag · Pan: Right Drag · Zoom: Scroll · Chase: Toggle Above
+                </div>
+                <div id="telemetry-hud-3d" style="position: absolute; top: 10px; right: 12px; font-size: 0.75rem; color: #38bdf8; font-family: monospace; z-index: 5; background: rgba(15,23,42,0.85); padding: 5px 12px; border-radius: 6px; border: 1px solid #1e293b; backdrop-filter: blur(4px);">
+                    <span id="hud-yaw">0.0°</span> | <span id="hud-pos" style="color: #4ade80;">X: 0.00m Y: 0.00m</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Card 4: Real-time Live Charts -->
+        <div class="card">
+            <div class="card-title">Telemetry Telemetry Charts</div>
+            
+            <!-- Chart 1: Heading Tracking (IMU Yaw vs Mag Heading) -->
+            <div class="chart-box">
+                <div class="chart-header">
+                    <span>
+                        <span class="legend-dot" style="background: #38bdf8;"></span>Fused Yaw
+                        <span class="legend-dot" style="background: #f59e0b; margin-left: 8px;"></span>Mag Azimuth
+                    </span>
+                    <span id="chart-heading-val">0.0° / 0.0°</span>
+                </div>
+                <canvas id="chart-heading"></canvas>
+            </div>
+
+            <!-- Chart 2: 4-Wheel Motor PWM -->
+            <div class="chart-box">
+                <div class="chart-header">
+                    <span>
+                        <span class="legend-dot" style="background: #10b981;"></span>FL
+                        <span class="legend-dot" style="background: #3b82f6; margin-left: 6px;"></span>FR
+                        <span class="legend-dot" style="background: #f59e0b; margin-left: 6px;"></span>RL
+                        <span class="legend-dot" style="background: #ef4444; margin-left: 6px;"></span>RR
+                    </span>
+                    <span>PWM Output (-255..255)</span>
+                </div>
+                <canvas id="chart-pwm"></canvas>
+            </div>
+
+            <!-- Chart 3: Encoder Tick Rate -->
+            <div class="chart-box">
+                <div class="chart-header">
+                    <span><span class="legend-dot" style="background: #a855f7;"></span>Tick Rate</span>
+                    <span id="chart-tickrate-val">0.0 Hz</span>
+                </div>
+                <canvas id="chart-tickrate"></canvas>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // WebSocket Connection
+        let ws = null;
+        let activeMode = 1;
+        let vx = 0, vy = 0, vz = 0;
+        let pan = 1500, tilt = 1500;
+
+        let crashProtOn = true;
+        const modeNames = {
+            1: "Holonomic", 2: "Pure Strafe", 3: "Pivot (Tank)",
+            4: "Diagonal", 5: "Heading-Lock", 6: "Orbit", 7: "Semi-Auto (Tank)",
+            9: "Full Auto (ROS2 VFH+)"
+        };
+
+        function toggleCrashProt() {
+            crashProtOn = !crashProtOn;
+            const btn = document.getElementById('btn-crash-prot');
+            if (btn) {
+                btn.innerText = crashProtOn ? "ON (ALL MODES)" : "OFF";
+                btn.style.color = crashProtOn ? "#10b981" : "#ef4444";
+                btn.style.borderColor = crashProtOn ? "#10b981" : "#ef4444";
+                btn.style.background = crashProtOn ? "rgba(16, 185, 129, 0.2)" : "rgba(239, 68, 68, 0.15)";
+            }
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "set_mode", mode: activeMode, crash_prot: crashProtOn }));
+            }
+        }
+
+        function connectWS() {
+            const loc = window.location;
+            const wsUri = (loc.protocol === "https:" ? "wss://" : "ws://") + loc.host + "/ws/telemetry";
+            ws = new WebSocket(wsUri);
+
+            ws.onopen = () => {
+                document.getElementById('status-badge').className = "badge online";
+                document.getElementById('status-badge').innerText = "ONLINE (20Hz)";
+            };
+
+            ws.onclose = () => {
+                document.getElementById('status-badge').className = "badge offline";
+                document.getElementById('status-badge').innerText = "RECONNECTING...";
+                setTimeout(connectWS, 1000);
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    updateTelemetryUI(data);
+                } catch (e) {}
+            };
+        }
+
+        function setMode(modeId) {
+            activeMode = modeId;
+            document.querySelectorAll('.btn-mode').forEach((btn) => {
+                const m = parseInt(btn.getAttribute('data-mode') || btn.getAttribute('onclick')?.match(/\d+/)?.[0]);
+                btn.classList.toggle('active', m === modeId);
+            });
+            document.getElementById('active-mode-label').innerText = modeNames[modeId] || ("Mode " + modeId);
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "set_mode", mode: modeId }));
+            }
+        }
+
+        function updateGimbal() {
+            pan = parseFloat(document.getElementById('pan-slider').value);
+            tilt = parseFloat(document.getElementById('tilt-slider').value);
+            document.getElementById('pan-val').innerText = pan + " us";
+            document.getElementById('tilt-val').innerText = tilt + " us";
+            sendControl();
+        }
+
+        function sendControl() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: "control",
+                    vx: vx,
+                    vy: vy,
+                    vz: vz,
+                    speed: Math.round(speedCeiling * 100),
+                    pan: pan,
+                    tilt: tilt,
+                    mode: activeMode
+                }));
+            }
+        }
+
+        // Joystick Logic
+        function setupJoystick(zoneId, knobId, onMove) {
+            const zone = document.getElementById(zoneId);
+            const knob = document.getElementById(knobId);
+            const maxRadius = zone.offsetWidth / 2 - 25;
+            let activeTouchId = null;
+
+            function handleStart(e) {
+                e.preventDefault();
+                const touch = e.targetTouches ? e.targetTouches[0] : e;
+                activeTouchId = touch.identifier ?? 'mouse';
+                window.addEventListener(e.type === 'touchstart' ? 'touchmove' : 'mousemove', handleMove, { passive: false });
+                window.addEventListener(e.type === 'touchstart' ? 'touchend' : 'mouseup', handleEnd);
+            }
+
+            function handleMove(e) {
+                e.preventDefault();
+                let touch = null;
+                if (e.targetTouches) {
+                    for (let t of e.targetTouches) {
+                        if (t.identifier === activeTouchId) { touch = t; break; }
+                    }
+                } else {
+                    touch = e;
+                }
+                if (!touch) return;
+
+                const rect = zone.getBoundingClientRect();
+                const centerX = rect.left + rect.width / 2;
+                const centerY = rect.top + rect.height / 2;
+                let dx = touch.clientX - centerX;
+                let dy = touch.clientY - centerY;
+                const dist = Math.hypot(dx, dy);
+
+                if (dist > maxRadius) {
+                    dx = (dx / dist) * maxRadius;
+                    dy = (dy / dist) * maxRadius;
+                }
+
+                knob.style.transform = `translate(${dx}px, ${dy}px)`;
+                onMove(dx / maxRadius, -dy / maxRadius);
+            }
+
+            function handleEnd(e) {
+                knob.style.transform = `translate(0px, 0px)`;
+                onMove(0, 0);
+                window.removeEventListener('touchmove', handleMove);
+                window.removeEventListener('mousemove', handleMove);
+                window.removeEventListener('touchend', handleEnd);
+                window.removeEventListener('mouseup', handleEnd);
+            }
+
+            zone.addEventListener('touchstart', handleStart, { passive: false });
+            zone.addEventListener('mousedown', handleStart);
+        }
+
+        setupJoystick('joy-trans', 'knob-trans', (normX, normY) => {
+            vx = normY; // forward/backward
+            vy = normX; // strafe left/right
+            sendControl();
+        });
+
+        setupJoystick('joy-rot', 'knob-rot', (normX, normY) => {
+            vz = -normX * 2.0; // rotation yaw rad/s
+            sendControl();
+        });
+
+        // Charts & Rolling History Data
+        const MAX_POINTS = 60;
+        const histYaw = [];
+        const histMag = [];
+        const histFL = [];
+        const histFR = [];
+        const histRL = [];
+        const histRR = [];
+        const histTickRate = [];
+
+        const compassCanvas = document.getElementById('compass-canvas');
+        const compassCtx = compassCanvas.getContext('2d');
+
+        const chartHeadingCanvas = document.getElementById('chart-heading');
+        const chartHeadingCtx = chartHeadingCanvas.getContext('2d');
+
+        const chartPwmCanvas = document.getElementById('chart-pwm');
+        const chartPwmCtx = chartPwmCanvas.getContext('2d');
+
+        const chartTickRateCanvas = document.getElementById('chart-tickrate');
+        const chartTickRateCtx = chartTickRateCanvas.getContext('2d');
+
+        function updateTelemetryUI(t) {
+            const yawDeg = (t.yaw * 180 / Math.PI).toFixed(1);
+            const magDeg = ((t.mag_heading || 0.0) * 180 / Math.PI).toFixed(1);
+            const tickRate = (t.tick_rate || 0.0).toFixed(1);
+
+            const elYaw = document.getElementById('val-yaw');
+            if (elYaw) elYaw.innerText = `${yawDeg}° / ${magDeg}°`;
+            const elTicks = document.getElementById('val-ticks');
+            if (elTicks) elTicks.innerText = t.encoder_ticks || 0;
+            const elTickRate = document.getElementById('val-tickrate');
+            if (elTickRate) elTickRate.innerText = tickRate + " Hz";
+            const elMotors = document.getElementById('val-motors');
+            if (elMotors) elMotors.innerText = `${t.pwm_fl || 0}, ${t.pwm_fr || 0}, ${t.pwm_rl || 0}, ${t.pwm_rr || 0}`;
+            const elChartHead = document.getElementById('chart-heading-val');
+            if (elChartHead) elChartHead.innerText = `${yawDeg}° / ${magDeg}°`;
+            const elChartTR = document.getElementById('chart-tickrate-val');
+            if (elChartTR) elChartTR.innerText = `${tickRate} Hz`;
+
+            // Push to rolling history
+            histYaw.push(t.yaw * 180 / Math.PI);
+            histMag.push((t.mag_heading || 0.0) * 180 / Math.PI);
+            histFL.push(t.pwm_fl || 0);
+            histFR.push(t.pwm_fr || 0);
+            histRL.push(t.pwm_rl || 0);
+            histRR.push(t.pwm_rr || 0);
+            histTickRate.push(t.tick_rate || 0.0);
+
+            if (histYaw.length > MAX_POINTS) {
+                histYaw.shift(); histMag.shift();
+                histFL.shift(); histFR.shift(); histRL.shift(); histRR.shift();
+                histTickRate.shift();
+            }
+
+            // Redraw Visualizations
+            drawCompass(t.yaw, t.mag_heading || 0.0);
+            drawHeadingChart();
+            drawPwmChart();
+            drawTickRateChart();
+        }
+
+        function drawCompass(yawRad, magRad) {
+            const w = compassCanvas.width = compassCanvas.offsetWidth;
+            const h = compassCanvas.height = compassCanvas.offsetHeight;
+            compassCtx.clearRect(0, 0, w, h);
+
+            const cx = w / 2;
+            const cy = h / 2;
+            const r = Math.min(cx, cy) - 12;
+
+            // Outer dial
+            compassCtx.beginPath();
+            compassCtx.arc(cx, cy, r, 0, Math.PI * 2);
+            compassCtx.strokeStyle = '#334155';
+            compassCtx.lineWidth = 2;
+            compassCtx.stroke();
+
+            // Dial markers (N, S, E, W)
+            compassCtx.fillStyle = '#94a3b8';
+            compassCtx.font = '10px sans-serif';
+            compassCtx.textAlign = 'center';
+            compassCtx.textBaseline = 'middle';
+            compassCtx.fillText('N', cx, cy - r + 8);
+            compassCtx.fillText('S', cx, cy + r - 8);
+            compassCtx.fillText('E', cx + r - 8, cy);
+            compassCtx.fillText('W', cx - r + 8, cy);
+
+            // 1. Draw Magnetometer Needle (Amber dashed)
+            compassCtx.save();
+            compassCtx.translate(cx, cy);
+            compassCtx.rotate(magRad);
+            compassCtx.beginPath();
+            compassCtx.moveTo(0, 0);
+            compassCtx.lineTo(0, -r + 14);
+            compassCtx.strokeStyle = '#f59e0b';
+            compassCtx.lineWidth = 2;
+            compassCtx.setLineDash([4, 3]);
+            compassCtx.stroke();
+            compassCtx.restore();
+
+            // 2. Draw Fused Heading Needle (Red pointer)
+            compassCtx.save();
+            compassCtx.translate(cx, cy);
+            compassCtx.rotate(yawRad);
+            compassCtx.beginPath();
+            compassCtx.moveTo(0, -r + 10);
+            compassCtx.lineTo(6, 0);
+            compassCtx.lineTo(-6, 0);
+            compassCtx.fillStyle = '#ef4444';
+            compassCtx.fill();
+
+            compassCtx.beginPath();
+            compassCtx.moveTo(0, r - 10);
+            compassCtx.lineTo(5, 0);
+            compassCtx.lineTo(-5, 0);
+            compassCtx.fillStyle = '#475569';
+            compassCtx.fill();
+            compassCtx.restore();
+        }
+
+        function drawHeadingChart() {
+            const w = chartHeadingCanvas.width = chartHeadingCanvas.offsetWidth;
+            const h = chartHeadingCanvas.height = chartHeadingCanvas.offsetHeight;
+            chartHeadingCtx.clearRect(0, 0, w, h);
+
+            // Zero line
+            chartHeadingCtx.strokeStyle = '#1e293b';
+            chartHeadingCtx.lineWidth = 1;
+            chartHeadingCtx.beginPath();
+            chartHeadingCtx.moveTo(0, h / 2);
+            chartHeadingCtx.lineTo(w, h / 2);
+            chartHeadingCtx.stroke();
+
+            if (histYaw.length < 2) return;
+            const step = w / MAX_POINTS;
+
+            // Trace 1: Mag Heading (Amber)
+            chartHeadingCtx.strokeStyle = '#f59e0b';
+            chartHeadingCtx.lineWidth = 1.5;
+            chartHeadingCtx.beginPath();
+            for (let i = 0; i < histMag.length; i++) {
+                const y = (h / 2) - (histMag[i] / 180.0) * (h / 2.2);
+                if (i === 0) chartHeadingCtx.moveTo(i * step, y);
+                else chartHeadingCtx.lineTo(i * step, y);
+            }
+            chartHeadingCtx.stroke();
+
+            // Trace 2: Fused Yaw (Cyan)
+            chartHeadingCtx.strokeStyle = '#38bdf8';
+            chartHeadingCtx.lineWidth = 2;
+            chartHeadingCtx.beginPath();
+            for (let i = 0; i < histYaw.length; i++) {
+                const y = (h / 2) - (histYaw[i] / 180.0) * (h / 2.2);
+                if (i === 0) chartHeadingCtx.moveTo(i * step, y);
+                else chartHeadingCtx.lineTo(i * step, y);
+            }
+            chartHeadingCtx.stroke();
+        }
+
+        function drawPwmChart() {
+            const w = chartPwmCanvas.width = chartPwmCanvas.offsetWidth;
+            const h = chartPwmCanvas.height = chartPwmCanvas.offsetHeight;
+            chartPwmCtx.clearRect(0, 0, w, h);
+
+            // Midline (0 PWM)
+            chartPwmCtx.strokeStyle = '#1e293b';
+            chartPwmCtx.lineWidth = 1;
+            chartPwmCtx.beginPath();
+            chartPwmCtx.moveTo(0, h / 2);
+            chartPwmCtx.lineTo(w, h / 2);
+            chartPwmCtx.stroke();
+
+            if (histFL.length < 2) return;
+            const step = w / MAX_POINTS;
+
+            const drawTrace = (arr, color) => {
+                chartPwmCtx.strokeStyle = color;
+                chartPwmCtx.lineWidth = 1.5;
+                chartPwmCtx.beginPath();
+                for (let i = 0; i < arr.length; i++) {
+                    const y = (h / 2) - (arr[i] / 255.0) * (h / 2.2);
+                    if (i === 0) chartPwmCtx.moveTo(i * step, y);
+                    else chartPwmCtx.lineTo(i * step, y);
+                }
+                chartPwmCtx.stroke();
+            };
+
+            drawTrace(histFL, '#10b981'); // FL
+            drawTrace(histFR, '#3b82f6'); // FR
+            drawTrace(histRL, '#f59e0b'); // RL
+            drawTrace(histRR, '#ef4444'); // RR
+        }
+
+        function drawTickRateChart() {
+            const w = chartTickRateCanvas.width = chartTickRateCanvas.offsetWidth;
+            const h = chartTickRateCanvas.height = chartTickRateCanvas.offsetHeight;
+            chartTickRateCtx.clearRect(0, 0, w, h);
+
+            if (histTickRate.length < 2) return;
+            const step = w / MAX_POINTS;
+            const maxVal = Math.max(50, ...histTickRate);
+
+            // Grid lines
+            chartTickRateCtx.strokeStyle = '#1e293b';
+            chartTickRateCtx.lineWidth = 1;
+            chartTickRateCtx.beginPath();
+            chartTickRateCtx.moveTo(0, h - 5);
+            chartTickRateCtx.lineTo(w, h - 5);
+            chartTickRateCtx.stroke();
+
+            chartTickRateCtx.strokeStyle = '#a855f7';
+            chartTickRateCtx.lineWidth = 2;
+            chartTickRateCtx.beginPath();
+            for (let i = 0; i < histTickRate.length; i++) {
+                const y = h - (histTickRate[i] / maxVal) * (h - 10) - 5;
+                if (i === 0) chartTickRateCtx.moveTo(i * step, y);
+                else chartTickRateCtx.lineTo(i * step, y);
+            }
+            chartTickRateCtx.stroke();
+        }
+
+        // Heartbeat send interval
+        setInterval(sendControl, 50);
+
+        
+        // --- Precision & Finer Controls State ---
+        let speedCeiling = 0.60;
+        let trimVx = 0, trimVy = 0, trimVz = 0;
+
+        function updateSpeedLimit(val) {
+            speedCeiling = parseInt(val) / 100.0;
+            document.getElementById('speed-limit-val').innerText = val + '%';
+            sendControl();
+        }
+
+        function updateTrim(axis, val) {
+            const v = parseInt(val) / 100.0;
+            if (axis === 'vx') { trimVx = v; document.getElementById('trim-vx-val').innerText = (val > 0 ? '+' : '') + val + '%'; }
+            if (axis === 'vy') { trimVy = v; document.getElementById('trim-vy-val').innerText = (val > 0 ? '+' : '') + val + '%'; }
+            if (axis === 'vz') { trimVz = v; document.getElementById('trim-vz-val').innerText = (val > 0 ? '+' : '') + val + '%'; }
+            
+            const hasTrim = (trimVx !== 0 || trimVy !== 0 || trimVz !== 0);
+            const statusEl = document.getElementById('trim-status');
+            if (statusEl) {
+                statusEl.innerText = hasTrim ? 'ACTIVE TRIMS' : 'TRIM BALANCED';
+                statusEl.style.color = hasTrim ? 'var(--accent-amber)' : 'var(--accent-green)';
+            }
+            sendControl();
+        }
+
+        function resetTrims() {
+            trimVx = 0; trimVy = 0; trimVz = 0;
+            document.getElementById('trim-vx').value = 0;
+            document.getElementById('trim-vy').value = 0;
+            document.getElementById('trim-vz').value = 0;
+            document.getElementById('trim-vx-val').innerText = '0%';
+            document.getElementById('trim-vy-val').innerText = '0%';
+            document.getElementById('trim-vz-val').innerText = '0%';
+            const statusEl = document.getElementById('trim-status');
+            if (statusEl) { statusEl.innerText = 'TRIM BALANCED'; statusEl.style.color = 'var(--accent-green)'; }
+            sendControl();
+        }
+
+        function microStep(dx, dy, dz) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            const payload = {
+                type: "control",
+                vx: dx * speedCeiling,
+                vy: dy * speedCeiling,
+                vz: dz * speedCeiling,
+                pan: pan,
+                tilt: tilt
+            };
+            ws.send(JSON.stringify(payload));
+            setTimeout(() => {
+                if (vx === 0 && vy === 0 && vz === 0) {
+                    ws.send(JSON.stringify({ type: "control", vx: 0, vy: 0, vz: 0, pan: pan, tilt: tilt }));
+                }
+            }, 60);
+        }
+
+        function triggerEStop() {
+            vx = 0; vy = 0; vz = 0;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "control", vx: 0, vy: 0, vz: 0, pan: pan, tilt: tilt }));
+            }
+            if (typeof resetKnobs === 'function') resetKnobs();
+            const badge = document.getElementById('status-badge');
+            if (badge) {
+                badge.innerText = "E-STOP ENGAGED";
+                badge.className = "badge offline";
+                setTimeout(() => {
+                    badge.innerText = "ONLINE (20Hz)";
+                    badge.className = "badge online";
+                }, 1000);
+            }
+        }
+
+        // Global Keyboard Teleop (WASD + Q/E)
+        window.addEventListener('keydown', (e) => {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+            let updated = false;
+            if (e.code === 'KeyW') { vx = speedCeiling; updated = true; }
+            else if (e.code === 'KeyS') { vx = -speedCeiling; updated = true; }
+            if (e.code === 'KeyA') { vy = speedCeiling; updated = true; }
+            else if (e.code === 'KeyD') { vy = -speedCeiling; updated = true; }
+            if (e.code === 'KeyQ') { vz = speedCeiling; updated = true; }
+            else if (e.code === 'KeyE') { vz = -speedCeiling; updated = true; }
+            if (e.code === 'Space') { triggerEStop(); e.preventDefault(); return; }
+            if (updated) {
+                sendControl();
+                e.preventDefault();
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+            let updated = false;
+            if (e.code === 'KeyW' || e.code === 'KeyS') { vx = 0; updated = true; }
+            if (e.code === 'KeyA' || e.code === 'KeyD') { vy = 0; updated = true; }
+            if (e.code === 'KeyQ' || e.code === 'KeyE') { vz = 0; updated = true; }
+            if (updated) {
+                sendControl();
+                e.preventDefault();
+            }
+        });
+
+        // Auto-connect
+        window.addEventListener('DOMContentLoaded', connectWS);
+    
+        // --- 3D Digital Twin & Arena Simulator Engine ---
+        const hudPosEl = document.getElementById('hud-pos');
+        const valPosEl = document.getElementById('val-pos');
+        const valRangeEl = document.getElementById('val-range');
+        const statusBadgeEl = document.getElementById('status-badge');
+        let hudYawEl = document.getElementById('hud-yaw');
+
+        // Server Sensory Fusion Objects (Breadcrumb Trail & Obstacle Dot Cloud)
+        const MAX_SERVER_PATH = 128;
+        const serverPathPos = new Float32Array(MAX_SERVER_PATH * 3);
+        let serverPathGeo = null;
+        const MAX_SERVER_DOTS = 128;
+        const serverDotPos = new Float32Array(MAX_SERVER_DOTS * 3);
+        let serverDotGeo = null;
+
+        const container3D = document.getElementById('rover-3d-container');
+        let roverMesh = null;
+        let pivotGroup = null;
+        let statusEl = document.getElementById('model-status');
+        let btnCamMode = document.getElementById('btn-cam-mode');
+        let btnCenterRover = document.getElementById('btn-center-rover');
+        let btnClearTrail = document.getElementById('btn-clear-trail');
+
+        let isChaseCam = false;
+        let liveWheelSpeeds = [0, 0, 0, 0];
+
+        // Trajectory trail buffer
+        const MAX_TRAIL_PTS = 600;
+        const trailPositions = new Float32Array(MAX_TRAIL_PTS * 3);
+        let trailCount = 0;
+        let trailLine = null;
+        let lastTrailX = 9999, lastTrailZ = 9999;
+
+        // Obstacle visualization meshes
+        let usCone = null, usDisc = null;
+        let tofLRay = null, tofLDisc = null;
+        let tofRRay = null, tofRDisc = null;
+
+        if (container3D && typeof THREE !== 'undefined') {
+            const scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x060913);
+            scene.fog = new THREE.FogExp2(0x060913, 0.045);
+
+            const camera = new THREE.PerspectiveCamera(42, container3D.clientWidth / container3D.clientHeight, 0.08, 120);
+            camera.position.set(1.15, 0.85, 1.35);
+
+            const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
+            renderer.setSize(container3D.clientWidth, container3D.clientHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            if (THREE.sRGBEncoding) renderer.outputEncoding = THREE.sRGBEncoding;
+            container3D.appendChild(renderer.domElement);
+
+            const controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.target.set(0, 0.12, 0);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.06;
+            controls.maxPolarAngle = Math.PI / 2 - 0.02; // Keep camera above ground arena
+            controls.minDistance = 0.25;
+            controls.maxDistance = 15.0;
+
+            // --- Studio Lighting Rig for PBR Textures ---
+            const ambientLight = new THREE.AmbientLight(0xffffff, 1.4);
+            scene.add(ambientLight);
+
+            const sunLight = new THREE.DirectionalLight(0xffffff, 2.6);
+            sunLight.position.set(4.0, 7.0, 3.5);
+            sunLight.castShadow = true;
+            sunLight.shadow.mapSize.width = 1024;
+            sunLight.shadow.mapSize.height = 1024;
+            sunLight.shadow.camera.near = 0.5;
+            sunLight.shadow.camera.far = 25;
+            sunLight.shadow.camera.left = -3;
+            sunLight.shadow.camera.right = 3;
+            sunLight.shadow.camera.top = 3;
+            sunLight.shadow.camera.bottom = -3;
+            sunLight.shadow.bias = -0.0005;
+            scene.add(sunLight);
+
+            const skyFillLight = new THREE.DirectionalLight(0x38bdf8, 1.1);
+            skyFillLight.position.set(-4.0, 3.0, -3.0);
+            scene.add(skyFillLight);
+
+            const rimLight = new THREE.DirectionalLight(0x10b981, 0.8);
+            rimLight.position.set(0, -2.0, -4.0);
+            scene.add(rimLight);
+
+            // --- Arena Ground & Coordinate Grid ---
+            const gridHelper = new THREE.GridHelper(16, 80, 0x0284c7, 0x1e293b);
+            gridHelper.position.y = 0.0;
+            scene.add(gridHelper);
+
+            // Arena Origin Target Ring (0,0)
+            const originRingGeo = new THREE.RingGeometry(0.18, 0.22, 32);
+            originRingGeo.rotateX(-Math.PI / 2);
+            const originRingMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide, transparent: true, opacity: 0.6 });
+            const originRing = new THREE.Mesh(originRingGeo, originRingMat);
+            originRing.position.y = 0.002;
+            scene.add(originRing);
+
+            // Ground Floor Plane (Shadow Receiver)
+            const floorGeo = new THREE.PlaneGeometry(24, 24);
+            const floorMat = new THREE.MeshStandardMaterial({
+                color: 0x060913,
+                roughness: 0.9,
+                metalness: 0.1,
+                depthWrite: true
+            });
+            const floorMesh = new THREE.Mesh(floorGeo, floorMat);
+            floorMesh.rotateX(-Math.PI / 2);
+            floorMesh.position.y = -0.002;
+            floorMesh.receiveShadow = true;
+            scene.add(floorMesh);
+
+            // --- Arena Metric Obstacles (Pillars for Sensor Detection) ---
+            const arenaObstacles = [];
+            const obsMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.4, metalness: 0.7 });
+            const obsGeo = new THREE.BoxGeometry(0.35, 0.45, 0.35);
+            const obsPositions = [
+                { x: 0.0, z: -1.75 },
+                { x: 1.5, z: -0.6 },
+                { x: -1.5, z: -0.6 },
+                { x: 1.1, z: 1.3 },
+                { x: -1.1, z: 1.3 }
+            ];
+            obsPositions.forEach(p => {
+                const obs = new THREE.Mesh(obsGeo, obsMat);
+                obs.position.set(p.x, 0.225, p.z);
+                obs.castShadow = true;
+                obs.receiveShadow = true;
+                scene.add(obs);
+                const wire = new THREE.LineSegments(
+                    new THREE.EdgesGeometry(obsGeo),
+                    new THREE.LineBasicMaterial({ color: 0x38bdf8, opacity: 0.5, transparent: true })
+                );
+                obs.add(wire);
+                arenaObstacles.push({ x: p.x, z: p.z, r: 0.28 });
+            });
+
+            // --- Trajectory Motion Trail ---
+            const trailGeo = new THREE.BufferGeometry();
+            trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPositions, 3));
+            trailGeo.setDrawRange(0, 0);
+            const trailMat = new THREE.LineBasicMaterial({
+                color: 0x38bdf8,
+                linewidth: 2,
+                transparent: true,
+                opacity: 0.85
+            });
+            trailLine = new THREE.Line(trailGeo, trailMat);
+            scene.add(trailLine);
+
+            // ROS2 Sensory Fusion Breadcrumb Path Trail
+            serverPathGeo = new THREE.BufferGeometry();
+            serverPathGeo.setAttribute('position', new THREE.BufferAttribute(serverPathPos, 3));
+            serverPathGeo.setDrawRange(0, 0);
+            const serverPathMat = new THREE.LineBasicMaterial({
+                color: 0x10b981,
+                linewidth: 2,
+                transparent: true,
+                opacity: 0.75
+            });
+            const serverPathLine = new THREE.Line(serverPathGeo, serverPathMat);
+            scene.add(serverPathLine);
+
+            // ROS2 Sensory Fusion Obstacle Dots Cloud
+            serverDotGeo = new THREE.BufferGeometry();
+            serverDotGeo.setAttribute('position', new THREE.BufferAttribute(serverDotPos, 3));
+            serverDotGeo.setDrawRange(0, 0);
+            const serverDotMat = new THREE.PointsMaterial({
+                color: 0xef4444,
+                size: 0.045,
+                transparent: true,
+                opacity: 0.95
+            });
+            const serverDotCloud = new THREE.Points(serverDotGeo, serverDotMat);
+            scene.add(serverDotCloud);
+
+            function addTrailPoint(x, z) {
+                if (Math.hypot(x - lastTrailX, z - lastTrailZ) < 0.03) return; // 3cm threshold
+                lastTrailX = x;
+                lastTrailZ = z;
+
+                if (trailCount < MAX_TRAIL_PTS) {
+                    trailPositions[trailCount * 3 + 0] = x;
+                    trailPositions[trailCount * 3 + 1] = 0.015;
+                    trailPositions[trailCount * 3 + 2] = z;
+                    trailCount++;
+                } else {
+                    // Shift buffer left
+                    trailPositions.copyWithin(0, 3, MAX_TRAIL_PTS * 3);
+                    trailPositions[(MAX_TRAIL_PTS - 1) * 3 + 0] = x;
+                    trailPositions[(MAX_TRAIL_PTS - 1) * 3 + 1] = 0.015;
+                    trailPositions[(MAX_TRAIL_PTS - 1) * 3 + 2] = z;
+                }
+                trailGeo.attributes.position.needsUpdate = true;
+                trailGeo.setDrawRange(0, trailCount);
+            }
+
+            // --- Rover World Entity Rig ---
+            pivotGroup = new THREE.Group();
+            scene.add(pivotGroup);
+
+            // Heading & Rotation Rig inside Pivot Group
+            roverMesh = new THREE.Group();
+            pivotGroup.add(roverMesh);
+
+            // Ground Heading Projection Indicator
+            const dirArrowGeo = new THREE.ConeGeometry(0.08, 0.22, 16);
+            dirArrowGeo.rotateX(Math.PI / 2);
+            const dirArrowMat = new THREE.MeshBasicMaterial({ color: 0x10b981, transparent: true, opacity: 0.75 });
+            const dirArrow = new THREE.Mesh(dirArrowGeo, dirArrowMat);
+            dirArrow.position.set(0, 0.01, -0.28); // points towards -Z (North)
+            roverMesh.add(dirArrow);
+
+            // Compass Dial Ring under Rover
+            const compassRingGeo = new THREE.RingGeometry(0.32, 0.35, 32);
+            compassRingGeo.rotateX(-Math.PI / 2);
+            const compassRingMat = new THREE.MeshBasicMaterial({ color: 0x0284c7, transparent: true, opacity: 0.35, side: THREE.DoubleSide });
+            const compassRing = new THREE.Mesh(compassRingGeo, compassRingMat);
+            compassRing.position.y = 0.008;
+            roverMesh.add(compassRing);
+
+            // --- Obstacle Visualization Sensors ---
+            // 1. Ultrasonic Sensor Cone (Front Center)
+            const usConeGeo = new THREE.ConeGeometry(0.18, 0.6, 16, 1, true);
+            usConeGeo.rotateX(-Math.PI / 2);
+            usConeGeo.translate(0, 0, -0.3);
+            const usConeMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.22, wireframe: true });
+            usCone = new THREE.Mesh(usConeGeo, usConeMat);
+            usCone.position.set(0, 0.12, -0.16);
+            roverMesh.add(usCone);
+
+            const usDiscGeo = new THREE.RingGeometry(0.02, 0.12, 16);
+            const usDiscMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.65, side: THREE.DoubleSide });
+            usDisc = new THREE.Mesh(usDiscGeo, usDiscMat);
+            usDisc.position.set(0, 0.12, -0.6);
+            roverMesh.add(usDisc);
+
+            // 2. Dual ToF Beams (Left & Right, angled at ±32°)
+            const tofGeo = new THREE.CylinderGeometry(0.004, 0.004, 0.5, 8);
+            tofGeo.rotateX(-Math.PI / 2);
+            tofGeo.translate(0, 0, -0.25);
+            const tofMatL = new THREE.MeshBasicMaterial({ color: 0x10b981, transparent: true, opacity: 0.6 });
+            tofLRay = new THREE.Mesh(tofGeo, tofMatL);
+            tofLRay.position.set(-0.12, 0.10, -0.15);
+            tofLRay.rotation.y = 0.5585; // +32 deg left
+            roverMesh.add(tofLRay);
+
+            const tofMatR = new THREE.MeshBasicMaterial({ color: 0x10b981, transparent: true, opacity: 0.6 });
+            tofRRay = new THREE.Mesh(tofGeo.clone(), tofMatR);
+            tofRRay.position.set(0.12, 0.10, -0.15);
+            tofRRay.rotation.y = -0.5585; // -32 deg right
+            roverMesh.add(tofRRay);
+
+            // --- Load User's Authentic PBR 3D Rover Model ---
+            const loader = new THREE.GLTFLoader();
+            statusEl.textContent = 'Loading 3D Rover Twin...';
+            let authenticRoverModel = null;
+
+            async function loadRoverModel() {
+                if (typeof MeshoptDecoder !== 'undefined' && MeshoptDecoder.ready) {
+                    try {
+                        await MeshoptDecoder.ready;
+                        loader.setMeshoptDecoder(MeshoptDecoder);
+                    } catch (e) {
+                        console.warn('MeshoptDecoder init fallback:', e);
+                    }
+                }
+
+                loader.load('/static/rover_model.glb', (gltf) => {
+                    authenticRoverModel = gltf.scene;
+
+                    // Align orientation: car length along X -> rotate around Y so front points to North (-Z)
+                    authenticRoverModel.rotation.y = -Math.PI / 2;
+
+                    const modelWrapper = new THREE.Group();
+                    modelWrapper.add(authenticRoverModel);
+                    modelWrapper.updateMatrixWorld(true);
+
+                    // Center bounding box accurately from the rotated model
+                    const box = new THREE.Box3().setFromObject(modelWrapper);
+                    const center = box.getCenter(new THREE.Vector3());
+
+                    // Adjust position inside wrapper: center on X/Z and place wheel bottoms flush with Y = 0 ground
+                    authenticRoverModel.position.x -= center.x;
+                    authenticRoverModel.position.z -= center.z;
+                    authenticRoverModel.position.y -= box.min.y;
+
+                    authenticRoverModel.traverse((child) => {
+                        if (child.isMesh) {
+                            child.castShadow = true;
+                            child.receiveShadow = true;
+                            if (child.material) {
+                                child.material.roughness = Math.max(child.material.roughness || 0.45, 0.35);
+                                child.material.metalness = Math.min(child.material.metalness || 0.35, 0.7);
+                            }
+                        }
+                    });
+
+                    roverMesh.add(modelWrapper);
+                    statusEl.textContent = '3D Digital Twin Active (Real PBR Rover)';
+                    statusEl.style.color = '#10b981';
+                }, (xhr) => {
+                    if (xhr.lengthComputable) {
+                        const pct = Math.round((xhr.loaded / xhr.total) * 100);
+                        statusEl.textContent = `Loading ${pct}%`;
+                    }
+                }, (err) => {
+                    console.error('GLTF loading error:', err);
+                    statusEl.textContent = 'Model Fallback Active';
+                    statusEl.style.color = '#f59e0b';
+                });
+            }
+            loadRoverModel();
+
+            // Interactive Simulator State
+            let simMode = true; // Interactive 3D Arena Simulator enabled by default
+            let simPosX = 0.0, simPosZ = 0.0, simYaw = 0.0;
+            let lastTelemTime = 0;
+            let isAutoDemo = false, autoDemoTime = 0;
+
+            const btnSimMode = document.getElementById('btn-sim-mode');
+            if (btnSimMode) {
+                btnSimMode.addEventListener('click', () => {
+                    simMode = !simMode;
+                    btnSimMode.textContent = simMode ? '🎮 Simulator: ACTIVE' : '🎮 Simulator: STANDBY';
+                    btnSimMode.style.color = simMode ? '#10b981' : '#94a3b8';
+                    btnSimMode.style.borderColor = simMode ? '#10b981' : '#334155';
+                    btnSimMode.style.background = simMode ? 'rgba(16, 185, 129, 0.2)' : '#1e293b';
+                });
+            }
+
+            const btnDemoPatrol = document.getElementById('btn-demo-patrol');
+            if (btnDemoPatrol) {
+                btnDemoPatrol.addEventListener('click', () => {
+                    isAutoDemo = !isAutoDemo;
+                    autoDemoTime = 0;
+                    btnDemoPatrol.textContent = isAutoDemo ? '⏹ Stop Demo' : '✨ Auto-Demo';
+                    btnDemoPatrol.style.color = isAutoDemo ? '#ef4444' : '#a855f7';
+                    btnDemoPatrol.style.borderColor = isAutoDemo ? '#ef4444' : '#6b21a8';
+                    if (isAutoDemo) simMode = true;
+                });
+            }
+
+            // Camera Mode Button Toggle
+            if (btnCamMode) {
+                btnCamMode.addEventListener('click', () => {
+                    isChaseCam = !isChaseCam;
+                    btnCamMode.textContent = isChaseCam ? '🎥 Chase Cam: ON' : '🎥 Chase Cam: OFF';
+                    btnCamMode.style.color = isChaseCam ? '#10b981' : '#38bdf8';
+                    btnCamMode.style.borderColor = isChaseCam ? '#10b981' : '#334155';
+                });
+            }
+
+            if (btnCenterRover) {
+                btnCenterRover.addEventListener('click', () => {
+                    controls.target.set(pivotGroup.position.x, pivotGroup.position.y + 0.12, pivotGroup.position.z);
+                    camera.position.set(pivotGroup.position.x + 1.15, pivotGroup.position.y + 0.85, pivotGroup.position.z + 1.35);
+                });
+            }
+
+            if (btnClearTrail) {
+                btnClearTrail.addEventListener('click', () => {
+                    trailCount = 0;
+                    trailGeo.setDrawRange(0, 0);
+                    trailGeo.attributes.position.needsUpdate = true;
+                });
+            }
+
+            // Disengage Chase Cam if user manually interacts with orbit controls
+            controls.addEventListener('start', () => {
+                if (isChaseCam) {
+                    isChaseCam = false;
+                    if (btnCamMode) {
+                        btnCamMode.textContent = '🎥 Chase Cam: OFF';
+                        btnCamMode.style.color = '#38bdf8';
+                        btnCamMode.style.borderColor = '#334155';
+                    }
+                }
+            });
+
+            // Render & Simulation Animation Loop
+            let lastAnimTime = performance.now();
+            function animate3D() {
+                requestAnimationFrame(animate3D);
+                const now = performance.now();
+                const dt = Math.min((now - lastAnimTime) / 1000.0, 0.1);
+                lastAnimTime = now;
+
+                // Real-Time Simulator Kinematics Engine
+                const timeSinceTelem = now - lastTelemTime;
+                if (simMode && timeSinceTelem > 1200) {
+                    // Calculate simulated obstacle proximity for the 3 sensors (0° US, +32° Left ToF, -32° Right ToF)
+                    let minUsDist = 2.0;
+                    let minTofLDist = 2.0;
+                    let minTofRDist = 2.0;
+
+                    if (typeof arenaObstacles !== 'undefined') {
+                        const frontX = Math.sin(simYaw), frontZ = -Math.cos(simYaw);
+                        const leftAng = simYaw + 0.5585, leftX = Math.sin(leftAng), leftZ = -Math.cos(leftAng);
+                        const rightAng = simYaw - 0.5585, rightX = Math.sin(rightAng), rightZ = -Math.cos(rightAng);
+
+                        for (const obs of arenaObstacles) {
+                            const ox = obs.x - simPosX, oz = obs.z - simPosZ;
+                            const distToCenter = Math.hypot(ox, oz);
+                            const surfaceDist = Math.max(0.04, distToCenter - obs.r);
+
+                            const dotFront = (ox * frontX + oz * frontZ) / (distToCenter || 1);
+                            if (dotFront > 0.75 && surfaceDist < minUsDist) minUsDist = surfaceDist;
+
+                            const dotL = (ox * leftX + oz * leftZ) / (distToCenter || 1);
+                            if (dotL > 0.85 && surfaceDist < minTofLDist) minTofLDist = surfaceDist;
+
+                            const dotR = (ox * rightX + oz * rightZ) / (distToCenter || 1);
+                            if (dotR > 0.85 && surfaceDist < minTofRDist) minTofRDist = surfaceDist;
+                        }
+                    }
+
+                    let cmdVx = vx; // forward/back [-1..+1]
+                    let cmdVy = vy; // strafe left/right [-1..+1]
+                    let cmdVz = vz; // yaw rate [-2..+2]
+
+                    if (activeMode === 7 && Math.abs(vx) < 0.08 && Math.abs(vy) < 0.08 && Math.abs(vz) < 0.08) {
+                        // Semi-Autonomous Tank Mode using 0° US and ±32° ToF sensors
+                        cmdVy = 0.0; // Strictly Tank Mode (no lateral strafe)
+                        const stopF = 0.28, stopT = 0.25, warnF = 0.65, warnT = 0.58;
+                        if (minUsDist < stopF || minTofLDist < stopT || minTofRDist < stopT) {
+                            const turnDir = (minTofRDist >= minTofLDist) ? 1.0 : -1.0;
+                            cmdVx = (minUsDist < 0.17) ? -0.22 : 0.0;
+                            cmdVz = 0.45 * turnDir;
+                        } else {
+                            const repL = Math.max(0, Math.min(1, (warnT - minTofLDist) / (warnT - stopT)));
+                            const repR = Math.max(0, Math.min(1, (warnT - minTofRDist) / (warnT - stopT)));
+                            const repF = Math.max(0, Math.min(1, (warnF - minUsDist) / (warnF - stopF))) * (minTofRDist >= minTofLDist ? 0.4 : -0.4);
+                            cmdVz = Math.max(-0.5, Math.min(0.5, (repL - repR) * 0.65 + repF));
+                            cmdVx = 0.25 * (1.0 - 0.35 * Math.abs(cmdVz));
+                        }
+                        statusEl.textContent = 'Semi-Auto (Tank): Navigating via 0° US & ±32° ToF';
+                    } else if (isAutoDemo) {
+                        autoDemoTime += dt;
+                        const phase = autoDemoTime % 16.0;
+                        if (phase < 3.5) {
+                            cmdVx = 0.0; cmdVy = 0.7; cmdVz = 0.0;
+                            statusEl.textContent = 'Auto-Demo: Pure Holonomic Strafe Right';
+                        } else if (phase < 7.0) {
+                            cmdVx = 0.0; cmdVy = -0.7; cmdVz = 0.0;
+                            statusEl.textContent = 'Auto-Demo: Pure Holonomic Strafe Left';
+                        } else if (phase < 11.0) {
+                            cmdVx = 0.6; cmdVy = 0.5; cmdVz = 1.0;
+                            statusEl.textContent = 'Auto-Demo: Diagonal Glide + 360 Spin';
+                        } else {
+                            cmdVx = -0.5; cmdVy = -0.3; cmdVz = -0.6;
+                            statusEl.textContent = 'Auto-Demo: Holonomic Return Glide';
+                        }
+                    }
+
+                    // Universal Crash Protection across all modes
+                    if (crashProtOn && cmdVx > 0) {
+                        const sF = Math.max(0, Math.min(1, (minUsDist - 0.22) / (0.48 - 0.22)));
+                        const sL = Math.max(0, Math.min(1, (minTofLDist - 0.20) / (0.44 - 0.20)));
+                        const sR = Math.max(0, Math.min(1, (minTofRDist - 0.20) / (0.44 - 0.20)));
+                        const origVx = cmdVx;
+                        cmdVx *= Math.min(sF, sL, sR);
+                        if (sL < 0.85 || sR < 0.85) {
+                            const deflect = (sR - sL) * 0.5 * origVx;
+                            if (activeMode === 3 || activeMode === 7) cmdVz += deflect;
+                            else cmdVy += deflect;
+                        }
+                    }
+
+                    const spdScale = (activeMode === 7 ? 0.35 : (speedCeiling || 0.6)) * 1.5;
+                    const cosY = Math.cos(simYaw);
+                    const sinY = Math.sin(simYaw);
+                    const fwdMps = cmdVx * spdScale;
+                    const strafeMps = (activeMode === 3 || activeMode === 7 ? 0 : cmdVy) * spdScale;
+
+                    // Forward is -Z in arena, Strafe right is +X
+                    simPosX += (strafeMps * cosY + fwdMps * sinY) * dt;
+                    simPosZ += (-fwdMps * cosY + strafeMps * sinY) * dt;
+                    simYaw -= cmdVz * 1.6 * dt;
+
+                    // Keep inside arena boundary
+                    simPosX = Math.max(-6.5, Math.min(6.5, simPosX));
+                    simPosZ = Math.max(-6.5, Math.min(6.5, simPosZ));
+
+                    if (pivotGroup) {
+                        pivotGroup.position.set(simPosX, 0, simPosZ);
+                        addTrailPoint(simPosX, simPosZ);
+                    }
+                    if (roverMesh) {
+                        roverMesh.rotation.order = 'YXZ';
+                        roverMesh.rotation.y = simYaw;
+                    }
+
+                    // Update sensor visual cones
+                    if (usCone && usDisc) {
+                        usCone.scale.set(minUsDist, minUsDist, minUsDist);
+                        usDisc.position.z = -0.16 - minUsDist * 0.6;
+                        const isWarn = minUsDist < 0.45;
+                        const isCrit = minUsDist < 0.22;
+                        const col = isCrit ? 0xef4444 : (isWarn ? 0xf59e0b : 0x38bdf8);
+                        usCone.material.color.setHex(col);
+                        usDisc.material.color.setHex(col);
+                    }
+
+                    // Update HUD indicators
+                    const hdDeg = (((-simYaw * 180 / Math.PI) % 360) + 360) % 360;
+                    if (valPosEl) valPosEl.innerText = `X:${simPosX.toFixed(2)} Y:${(-simPosZ).toFixed(2)}m`;
+                    if (hudPosEl) hudPosEl.innerText = `X: ${simPosX.toFixed(2)}m Y: ${(-simPosZ).toFixed(2)}m`;
+                    if (hudYawEl) hudYawEl.textContent = `Y:${hdDeg.toFixed(1)}° P:0.0° R:0.0°`;
+                    if (valRangeEl) valRangeEl.innerText = `US:${Math.round(minUsDist * 100)} L:${Math.round(minTofLDist * 100)} R:${Math.round(minTofRDist * 100)}cm`;
+                    const elYaw = document.getElementById('val-yaw');
+                    if (elYaw) elYaw.innerText = hdDeg.toFixed(1) + '°';
+
+                    // Update Compass dial needle
+                    if (typeof drawCompass === 'function') {
+                        drawCompass(hdDeg * Math.PI / 180.0, hdDeg * Math.PI / 180.0);
+                    }
+                }
+
+                // Chase Camera Follow Logic
+                if (isChaseCam && pivotGroup && roverMesh) {
+                    const roverPos = pivotGroup.position;
+                    const yawAngle = roverMesh.rotation.y;
+                    const chaseDist = 1.15;
+                    const chaseHeight = 0.52;
+
+                    const desiredCamPos = new THREE.Vector3(
+                        roverPos.x + Math.sin(yawAngle) * chaseDist,
+                        roverPos.y + chaseHeight,
+                        roverPos.z + Math.cos(yawAngle) * chaseDist
+                    );
+
+                    camera.position.lerp(desiredCamPos, 0.08);
+                    controls.target.lerp(new THREE.Vector3(roverPos.x, roverPos.y + 0.12, roverPos.z), 0.12);
+                }
+
+                controls.update();
+                renderer.render(scene, camera);
+            }
+            animate3D();
+
+            window.addEventListener('resize', () => {
+                if (!container3D || !renderer || !camera) return;
+                camera.aspect = container3D.clientWidth / container3D.clientHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(container3D.clientWidth, container3D.clientHeight);
+            });
+        }
+
+        // --- Hook Telemetry Update into 3D Rover Digital Twin & Arena Simulator ---
+        const origUpdateTelemetryUI = updateTelemetryUI;
+
+        updateTelemetryUI = function(data) {
+            origUpdateTelemetryUI(data);
+
+            const posX = Number(data.pos_x !== undefined ? data.pos_x : (data.pos_x_cm ? data.pos_x_cm / 100.0 : 0.0));
+            const posY = Number(data.pos_y !== undefined ? data.pos_y : (data.pos_y_cm ? data.pos_y_cm / 100.0 : 0.0));
+
+            // Update DOM telemetry indicators
+            if (valPosEl) valPosEl.innerText = `X:${posX.toFixed(2)} Y:${posY.toFixed(2)}m`;
+            if (hudPosEl) hudPosEl.innerText = `X: ${posX.toFixed(2)}m Y: ${posY.toFixed(2)}m`;
+
+            // Sync Active Mode
+            if (data.mode !== undefined && data.mode !== activeMode) {
+                activeMode = Number(data.mode);
+                document.querySelectorAll('.btn-mode').forEach((btn) => {
+                    const m = parseInt(btn.getAttribute('data-mode') || btn.getAttribute('onclick')?.match(/\d+/)?.[0]);
+                    btn.classList.toggle('active', m === activeMode);
+                });
+                const lbl = document.getElementById('active-mode-label');
+                if (lbl) lbl.innerText = modeNames[activeMode] || ("Mode " + activeMode);
+            }
+
+            // Update online link badge
+            if (data.link_type && statusBadgeEl) {
+                statusBadgeEl.className = "badge online";
+                statusBadgeEl.innerText = `ONLINE (${data.link_type})`;
+            }
+
+            // Update range sensors in header with Virtual ToF Fallback
+            const usMm = Number(data.ultra_mm || 0);
+            const tofLMm = Number(data.tof_l_mm || (data.tof ? data.tof[0] : 0));
+            const tofRMm = Number(data.tof_r_mm || (data.tof ? data.tof[1] : 0));
+            const vTofLMm = Number(data.virtual_tof_l_mm || 0);
+            const vTofRMm = Number(data.virtual_tof_r_mm || 0);
+            const dispL = tofLMm > 0 ? tofLMm : vTofLMm;
+            const dispR = tofRMm > 0 ? tofRMm : vTofRMm;
+
+            if (valRangeEl) {
+                const tag = (tofLMm === 0 && vTofLMm > 0) ? ' [VIRT]' : '';
+                valRangeEl.innerText = `US:${Math.round(usMm / 10)} L:${Math.round(dispL / 10)} R:${Math.round(dispR / 10)}cm${tag}`;
+            }
+
+            // Render ROS2 Server Sensory Fusion Path Trail
+            if (data.path_trail && Array.isArray(data.path_trail) && serverPathGeo) {
+                const count = Math.min(data.path_trail.length, MAX_SERVER_PATH);
+                for (let i = 0; i < count; i++) {
+                    const pt = data.path_trail[i];
+                    const px = Number(pt[0] !== undefined ? pt[0] : pt.x);
+                    const py = Number(pt[1] !== undefined ? pt[1] : pt.y);
+                    serverPathPos[i * 3 + 0] = px;
+                    serverPathPos[i * 3 + 1] = 0.012;
+                    serverPathPos[i * 3 + 2] = -py;
+                }
+                serverPathGeo.attributes.position.needsUpdate = true;
+                serverPathGeo.setDrawRange(0, count);
+            }
+
+            // Render ROS2 Server Sensory Fusion Obstacle Dot Cloud
+            if (data.obstacle_dots && Array.isArray(data.obstacle_dots) && serverDotGeo) {
+                const count = Math.min(data.obstacle_dots.length, MAX_SERVER_DOTS);
+                for (let i = 0; i < count; i++) {
+                    const pt = data.obstacle_dots[i];
+                    const px = Number(pt[0] !== undefined ? pt[0] : pt.x);
+                    const py = Number(pt[1] !== undefined ? pt[1] : pt.y);
+                    serverDotPos[i * 3 + 0] = px;
+                    serverDotPos[i * 3 + 1] = 0.02;
+                    serverDotPos[i * 3 + 2] = -py;
+                }
+                serverDotGeo.attributes.position.needsUpdate = true;
+                serverDotGeo.setDrawRange(0, count);
+            }
+
+            // 1. Live 3D World Position Translation (Odometry)
+            lastTelemTime = performance.now();
+            simPosX = posX;
+            simPosZ = -posY;
+            if (pivotGroup) {
+                // In Three.js: +X is East, +Z is South (-Y in ROS REP-103)
+                pivotGroup.position.x = posX;
+                pivotGroup.position.z = -posY;
+
+                // Record dynamic trajectory trail
+                addTrailPoint(posX, -posY);
+            }
+
+            // 2. Live 3D Orientation & Attitude Rotation
+            if (roverMesh) {
+                let yDeg = 0.0, pDeg = 0.0, rDeg = 0.0;
+                if (data.pitch_deg !== undefined) pDeg = Number(data.pitch_deg);
+                else if (data.p !== undefined) pDeg = Number(data.p);
+
+                if (data.roll_deg !== undefined) rDeg = Number(data.roll_deg);
+                else if (data.r !== undefined) rDeg = Number(data.r);
+
+                if (data.yaw_deg !== undefined) yDeg = Number(data.yaw_deg);
+                else if (data.hd !== undefined) yDeg = Number(data.hd);
+                else if (data.yaw !== undefined) yDeg = Number(data.yaw) * 180 / Math.PI;
+
+                simYaw = -yDeg * Math.PI / 180;
+
+                const q = data.q || data.quaternion;
+                if (q && Array.isArray(q) && q.length >= 4) {
+                    // Strict Onboard IMU 9-DoF Madgwick AHRS Sensor Fusion Projection
+                    roverMesh.quaternion.set(Number(q[1]), -Number(q[3]), -Number(q[2]), Number(q[0])).normalize();
+                } else {
+                    roverMesh.rotation.order = 'YXZ';
+                    roverMesh.rotation.y = -yDeg * Math.PI / 180;
+                    roverMesh.rotation.x = pDeg * Math.PI / 180;
+                    roverMesh.rotation.z = -rDeg * Math.PI / 180;
+                }
+
+                // Project Live Rover IMU Coordinates onto HUD
+                if (hudYawEl) {
+                    const dispPitch = -pDeg;
+                    let hudStr = `Y:${yDeg.toFixed(1)}° P:${dispPitch >= 0 ? '+' : ''}${dispPitch.toFixed(1)}° R:${rDeg >= 0 ? '+' : ''}${rDeg.toFixed(1)}°`;
+                    const a = data.a || data.accel;
+                    const g = data.g || data.gyro;
+                    if (a && a.length >= 3) {
+                        hudStr += ` | A:[${Number(a[0]).toFixed(1)},${Number(a[1]).toFixed(1)},${Number(a[2]).toFixed(1)}]`;
+                    }
+                    if (g && g.length >= 3) {
+                        hudStr += ` | G:[${Number(g[0]).toFixed(2)},${Number(g[1]).toFixed(2)},${Number(g[2]).toFixed(2)}]`;
+                    }
+                    hudYawEl.textContent = hudStr;
+                }
+            }
+
+            // 3. Dynamic Obstacle Sensor Visualization Cones
+            if (usCone && usDisc) {
+                const distM = Math.max(0.06, Math.min(3.0, (usMm > 0 ? usMm : 2500) / 1000.0));
+                usCone.scale.set(distM, distM, distM);
+                usDisc.position.z = -0.16 - distM * 0.6;
+                const isWarn = (usMm > 0 && usMm < 350);
+                const isCrit = (usMm > 0 && usMm < 180);
+                const col = isCrit ? 0xef4444 : (isWarn ? 0xf59e0b : 0x38bdf8);
+                usCone.material.color.setHex(col);
+                usDisc.material.color.setHex(col);
+            }
+
+            if (tofLRay) {
+                const distL = Math.max(0.05, Math.min(1.5, (dispL > 0 ? dispL : 1200) / 1000.0));
+                tofLRay.scale.set(1, 1, distL / 0.5);
+                const isWarn = (dispL > 0 && dispL < 250);
+                tofLRay.material.color.setHex(isWarn ? 0xef4444 : 0x10b981);
+            }
+
+            if (tofRRay) {
+                const distR = Math.max(0.05, Math.min(1.5, (dispR > 0 ? dispR : 1200) / 1000.0));
+                tofRRay.scale.set(1, 1, distR / 0.5);
+                const isWarn = (dispR > 0 && dispR < 250);
+                tofRRay.material.color.setHex(isWarn ? 0xef4444 : 0x10b981);
+            }
+
+            // Bind Pi 3B+ 5MP Camera & UART Telemetry
+            if (data.pi_cam) {
+                updatePiCamTelemetry(data.pi_cam);
+            }
+        };
+
+        function togglePiCamCard() {
+            const body = document.getElementById('picam-body');
+            const btn = document.getElementById('picam-collapse-btn');
+            if (body) {
+                const isHidden = body.style.display === 'none';
+                body.style.display = isHidden ? 'flex' : 'none';
+                if (btn) btn.innerText = isHidden ? '▼' : '▲';
+            }
+        }
+
+        let picamStreamRetryTimer = null;
+        function handlePiCamError(img) {
+            const placeholder = document.getElementById('picam-placeholder');
+            if (placeholder) placeholder.style.display = 'flex';
+            if (img) img.style.display = 'none';
+            if (!picamStreamRetryTimer) {
+                picamStreamRetryTimer = setTimeout(() => {
+                    picamStreamRetryTimer = null;
+                    if (img) {
+                        img.src = 'http://192.168.0.103:8081/stream?t=' + Date.now();
+                    }
+                }, 4000);
+            }
+        }
+
+        function updatePiCamTelemetry(cam) {
+            if (!cam) return;
+            const isOnline = !!cam.cam_online || (cam.last_seen && (Date.now() / 1000 - cam.last_seen < 4.0));
+            const badge = document.getElementById('picam-badge');
+            const dot = document.getElementById('picam-status-dot');
+            const placeholder = document.getElementById('picam-placeholder');
+            const img = document.getElementById('picam-stream-img');
+
+            if (badge) {
+                badge.className = isOnline ? "badge online" : "badge offline";
+                badge.innerText = isOnline ? "ONLINE" : "OFFLINE";
+            }
+            if (dot) {
+                dot.style.background = isOnline ? "#10b981" : "#ef4444";
+                dot.style.boxShadow = isOnline ? "0 0 8px #10b981" : "0 0 8px #ef4444";
+            }
+            if (img && placeholder) {
+                if (isOnline && img.style.display === 'none') {
+                    img.style.display = 'block';
+                    placeholder.style.display = 'none';
+                }
+            }
+
+            const elFps = document.getElementById('picam-fps-badge');
+            if (elFps && cam.fps !== undefined) elFps.innerText = Number(cam.fps).toFixed(1) + " FPS";
+
+            const elTemp = document.getElementById('picam-temp-badge');
+            if (elTemp && cam.cpu_temp_c !== undefined) elTemp.innerText = Number(cam.cpu_temp_c).toFixed(1) + " °C";
+
+            const elHead = document.getElementById('picam-heading-sugg');
+            if (elHead && cam.clear_heading_deg !== undefined) elHead.innerText = "Clear: " + Number(cam.clear_heading_deg).toFixed(1) + "°";
+
+            const elCpu = document.getElementById('picam-hw-cpu');
+            if (elCpu && cam.cpu_usage !== undefined) elCpu.innerText = Number(cam.cpu_usage).toFixed(1) + "%";
+
+            const elRam = document.getElementById('picam-hw-ram');
+            if (elRam && cam.mem_avail_mb !== undefined) elRam.innerText = Math.round(cam.mem_avail_mb) + " MB";
+
+            const elTx = document.getElementById('picam-hw-tx');
+            if (elTx && cam.uart_tx !== undefined) elTx.innerText = cam.uart_tx;
+
+            const elRx = document.getElementById('picam-hw-rx');
+            if (elRx && cam.uart_rx !== undefined) elRx.innerText = cam.uart_rx;
+
+            function updateSectorBar(barId, valId, distMm) {
+                const bar = document.getElementById(barId);
+                const val = document.getElementById(valId);
+                const d = Math.max(0, Math.min(2000, Number(distMm !== undefined ? distMm : 2000)));
+                const pct = Math.round((d / 2000) * 100);
+                if (val) val.innerText = d + "mm";
+                if (bar) {
+                    bar.style.width = pct + "%";
+                    if (d < 350) bar.style.backgroundColor = "#ef4444";
+                    else if (d < 700) bar.style.backgroundColor = "#f59e0b";
+                    else bar.style.backgroundColor = "#10b981";
+                }
+            }
+
+            updateSectorBar('picam-bar-l', 'picam-bar-l-val', cam.vis_l_mm);
+            updateSectorBar('picam-bar-f', 'picam-bar-f-val', cam.vis_f_mm);
+            updateSectorBar('picam-bar-r', 'picam-bar-r-val', cam.vis_r_mm);
+        }
+    </script>
+
+</body>
+</html>

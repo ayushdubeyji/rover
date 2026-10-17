@@ -90,17 +90,8 @@ void DisplayUI::drawAttitude(const RemoteTelemetry &tm) {
 
   // Smooth decoupled Euler angles so pitch/roll never gimbal-lock or invert when yaw rotates
   static float sRoll = 0.0f, sPitch = 0.0f, sYaw = 0.0f;
-  float effRoll = tm.imuRollDeg;
-  float effPitch = tm.imuPitchDeg;
-  if (tm.ctrlSource == CTRL_AIR_REMOTE || tm.airAxis != 0) {
-    if (tm.airAxis == 1) { effRoll = tm.imuPitchDeg; effPitch = tm.imuRollDeg; }
-    else if (tm.airAxis == 2) { effPitch = -tm.imuPitchDeg; }
-    else if (tm.airAxis == 3) { effRoll = -tm.imuRollDeg; }
-    else if (tm.airAxis == 4) { effPitch = -tm.imuPitchDeg; effRoll = -tm.imuRollDeg; }
-    else if (tm.airAxis == 5) { effRoll = -tm.imuPitchDeg; effPitch = -tm.imuRollDeg; }
-  }
-  float targetRoll = constrain(effRoll, -65.0f, 65.0f);
-  float targetPitch = constrain(effPitch, -65.0f, 65.0f);
+  float targetRoll = constrain(tm.imuRollDeg, -65.0f, 65.0f);
+  float targetPitch = constrain(tm.imuPitchDeg, -65.0f, 65.0f);
   float targetYaw = fmodf(tm.imuYawDeg + tm.inspectYaw + 3600.0f, 360.0f);
 
 
@@ -213,43 +204,98 @@ void DisplayUI::drawAttitude(const RemoteTelemetry &tm) {
 }
 
 void DisplayUI::drawMap(const RemoteTelemetry &tm) {
-  drawHeader(tm, "MAP");
+  drawHeader(tm, "RADAR / MAP");
   const int cx = 120, cy = 92;
   const float cmPerPx = 2.0f;
+
+  // Concentric radar range rings (20cm, 40cm, 60cm)
   for (int r = 20; r <= 60; r += 20) canvas->drawCircle(cx, cy, r, 0x10A2);
   canvas->drawFastHLine(0, cy, CW, 0x0841); canvas->drawFastVLine(cx, 15, CH - 15, 0x0841);
 
-  if (abs(tm.posCm[0] - lastTrailX) + abs(tm.posCm[1] - lastTrailY) > 3.0f) {
-    lastTrailX = tm.posCm[0]; lastTrailY = tm.posCm[1];
-    trailX[trailHead] = (int16_t)lastTrailX; trailY[trailHead] = (int16_t)lastTrailY;
-    trailHead = (trailHead + 1) & 63; if (trailN < 64) trailN++;
-  }
-  for (int i = 0; i < trailN; i++) {
-    int idx = (trailHead - 1 - i) & 63;
-    int px = cx - (int)((trailY[idx] - tm.posCm[1]) / cmPerPx);
-    int py = cy - (int)((trailX[idx] - tm.posCm[0]) / cmPerPx);
-    if (px > 0 && px < CW && py > 15 && py < CH) canvas->drawPixel(px, py, i < 8 ? C_GREEN : C_BLUE);
+  // 1. Update Breadcrumb Path Trail
+  float dTrailSq = (tm.posCm[0] - lastTrailCmX) * (tm.posCm[0] - lastTrailCmX) + (tm.posCm[1] - lastTrailCmY) * (tm.posCm[1] - lastTrailCmY);
+  if (dTrailSq >= 16.0f || pathTrailN == 0) { // 4cm movement step
+    lastTrailCmX = tm.posCm[0]; lastTrailCmY = tm.posCm[1];
+    pathTrail[pathTrailHead] = {tm.posCm[0], tm.posCm[1]};
+    pathTrailHead = (pathTrailHead + 1) % 48;
+    if (pathTrailN < 48) pathTrailN++;
   }
 
+  // 2. Update Persisted Obstacle Dot Cloud
   float yaw = tm.imuYawDeg * DEG_TO_RAD;
-  float fx = sinf(yaw), fy = -cosf(yaw);             // screen forward vector (0=N/Up, 90=E/Right)
-  float lx = -fy, ly = fx;                           // screen right vector (perp)
+  if (tm.hasTelem && (tm.calFlags & CAL_MAG_OK)) {
+    yaw = (float)tm.roverHeading * DEG_TO_RAD;
+  }
+
+  struct RayHit { uint16_t mm; float relAng; uint8_t type; } rays[3] = {
+    {tm.ultraMm, 0.0f, 0},
+    {tm.tofMm[0], 0.5585f, 1},
+    {tm.tofMm[1], -0.5585f, 2}
+  };
+
+  for (int i = 0; i < 3; i++) {
+    if (rays[i].mm >= 25 && rays[i].mm <= 1500) {
+      float distCm = rays[i].mm / 10.0f;
+      float hitAng = yaw + rays[i].relAng;
+      float wx = tm.posCm[0] + distCm * cosf(hitAng);
+      float wy = tm.posCm[1] + distCm * sinf(hitAng);
+      sensorDots[sensorDotHead] = {wx, wy, rays[i].type, 0};
+      sensorDotHead = (sensorDotHead + 1) % 48;
+      if (sensorDotCount < 48) sensorDotCount++;
+    }
+  }
+  for (int i = 0; i < (int)sensorDotCount; i++) {
+    if (sensorDots[i].age < 250) sensorDots[i].age++;
+  }
+
+  // 3. Render Connected Breadcrumb Path Trajectory (Gradient Cyan to Green)
+  for (int i = 0; i < (int)pathTrailN - 1; i++) {
+    int idx1 = (pathTrailHead - 1 - i + 48) % 48;
+    int idx2 = (pathTrailHead - 2 - i + 48) % 48;
+    int px1 = cx - (int)((pathTrail[idx1].y - tm.posCm[1]) / cmPerPx);
+    int py1 = cy - (int)((pathTrail[idx1].x - tm.posCm[0]) / cmPerPx);
+    int px2 = cx - (int)((pathTrail[idx2].y - tm.posCm[1]) / cmPerPx);
+    int py2 = cy - (int)((pathTrail[idx2].x - tm.posCm[0]) / cmPerPx);
+    if (px1 > 0 && px1 < CW && py1 > 15 && py1 < CH && px2 > 0 && px2 < CW && py2 > 15 && py2 < CH) {
+      uint16_t col = (i < 10) ? C_GREEN : (i < 24 ? C_CYAN : 0x028A);
+      canvas->drawLine(px1, py1, px2, py2, col);
+      canvas->drawPixel(px1, py1, (i < 8) ? C_GREEN : C_CYAN);
+    }
+  }
+
+  // 4. Render Persisted World-Frame Sensor Dot Trace Point Cloud
+  for (int i = 0; i < (int)sensorDotCount; i++) {
+    int px = cx - (int)((sensorDots[i].y - tm.posCm[1]) / cmPerPx);
+    int py = cy - (int)((sensorDots[i].x - tm.posCm[0]) / cmPerPx);
+    if (px > 2 && px < CW - 2 && py > 17 && py < CH - 2) {
+      uint16_t col = (sensorDots[i].type == 0) ? C_RED : (sensorDots[i].type == 1 ? C_YELLOW : C_ORANGE);
+      if (sensorDots[i].age > 80) col = 0x6200; // faded older hit
+      canvas->fillRect(px - 1, py - 1, 2, 2, col);
+    }
+  }
+
+  // 5. Render Rover Triangular Heading Glyph
+  float fx = sinf(yaw), fy = -cosf(yaw); // screen forward vector (0=N/Up, 90=E/Right)
+  float lx = -fy, ly = fx;              // screen right vector (perp)
   canvas->fillTriangle(cx + (int)(fx * 9), cy + (int)(fy * 9),
                        cx + (int)(-fx * 6 + lx * 6), cy + (int)(-fy * 6 + ly * 6),
                        cx + (int)(-fx * 6 - lx * 6), cy + (int)(-fy * 6 - ly * 6), C_GREEN);
 
-  struct Ray { uint16_t mm; float ang; } rays[3] = {{tm.ultraMm, 0}, {tm.tofMm[0], 0.5585f}, {tm.tofMm[1], -0.5585f}};
+  // 6. Render Live Sensor Raycasts
   for (int i = 0; i < 3; i++) {
-    if (!rays[i].mm || rays[i].mm > 2000) continue;
+    if (!rays[i].mm || rays[i].mm > 1800) continue;
     float d = rays[i].mm / 10.0f / cmPerPx + 8;
-    float c = cosf(rays[i].ang), s = sinf(rays[i].ang);
+    float c = cosf(rays[i].relAng), s = sinf(rays[i].relAng);
     float dx = fx * c + lx * s, dy = fy * c + ly * s;
     int ox = cx + (int)(dx * d), oy = cy + (int)(dy * d);
     canvas->drawLine(cx + (int)(dx * 9), cy + (int)(dy * 9), ox, oy, 0x4000);
-    canvas->fillCircle(ox, oy, 3, i == 0 ? C_RED : C_ORANGE);
+    canvas->fillCircle(ox, oy, 3, i == 0 ? C_RED : (i == 1 ? C_YELLOW : C_ORANGE));
   }
+
+  // 7. Footer Status
   canvas->setTextSize(1); canvas->setTextColor(C_MUTED);
-  canvas->setCursor(4, 144); canvas->printf("X %+.0f Y %+.0f cm  1px=2cm", tm.posCm[0], tm.posCm[1]);
+  canvas->setCursor(4, 144);
+  canvas->printf("X:%+.0f Y:%+.0f cm  PTS:%d  TRL:%d", tm.posCm[0], tm.posCm[1], sensorDotCount, pathTrailN);
 }
 
 void DisplayUI::drawSensors(const RemoteTelemetry &tm) {
@@ -299,13 +345,13 @@ void DisplayUI::drawDrive(const RemoteTelemetry &tm) {
   canvas->drawFastVLine(cx, cy - 5, 11, C_BORDER);
 
   // Effective tilt angles according to user airAxis configuration
-  float effP = tm.imuPitchDeg;
-  float effR = -tm.imuRollDeg;
-  if (tm.airAxis == 1) { effP = tm.imuRollDeg; effR = -tm.imuPitchDeg; }
-  else if (tm.airAxis == 2) { effP = -tm.imuPitchDeg; effR = -tm.imuRollDeg; }
-  else if (tm.airAxis == 3) { effP = tm.imuPitchDeg; effR = tm.imuRollDeg; }
-  else if (tm.airAxis == 4) { effP = -tm.imuPitchDeg; effR = tm.imuRollDeg; }
-  else if (tm.airAxis == 5) { effP = -tm.imuRollDeg; effR = tm.imuPitchDeg; }
+  float effP = tm.ctrlPitchDeg;
+  float effR = -tm.ctrlRollDeg;
+  if (tm.airAxis == 1) { effP = tm.ctrlRollDeg; effR = -tm.ctrlPitchDeg; }
+  else if (tm.airAxis == 2) { effP = -tm.ctrlPitchDeg; effR = -tm.ctrlRollDeg; }
+  else if (tm.airAxis == 3) { effP = tm.ctrlPitchDeg; effR = tm.ctrlRollDeg; }
+  else if (tm.airAxis == 4) { effP = -tm.ctrlPitchDeg; effR = tm.ctrlRollDeg; }
+  else if (tm.airAxis == 5) { effP = -tm.ctrlRollDeg; effR = tm.ctrlPitchDeg; }
 
   // Artificial horizon tilt bar
   float pClamped = constrain(effP, -25.0f, 25.0f);
@@ -551,7 +597,7 @@ int DisplayUI::menuSelect(RemoteTelemetry &tm) {
       tm.roverMode = tm.semiAuto ? MODE_AUTO : MODE_TANK;
       return ACT_SEMI_AUTO;
     case 2:
-      tm.autoSpeed = (tm.autoSpeed >= 75) ? 25 : tm.autoSpeed + 10;
+      tm.autoSpeed = (tm.autoSpeed >= 100) ? 40 : tm.autoSpeed + 5;
       return ACT_AUTO_SPEED;
     case 3:
       tm.crashProtect = !tm.crashProtect;
@@ -595,7 +641,7 @@ int DisplayUI::menuAdjust(RemoteTelemetry &tm, int dir) {
       tm.roverMode = tm.semiAuto ? MODE_AUTO : MODE_TANK;
       return ACT_SEMI_AUTO;
     case 2: // Auto Speed
-      tm.autoSpeed = constrain((int)tm.autoSpeed + dir * 5, 20, 80);
+      tm.autoSpeed = constrain((int)tm.autoSpeed + dir * 5, 40, 100);
       return ACT_AUTO_SPEED;
     case 3: // Crash Protect
       tm.crashProtect = (dir > 0);

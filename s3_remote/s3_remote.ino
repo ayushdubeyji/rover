@@ -142,12 +142,23 @@ void onEspNowRecv(const uint8_t* mac, const uint8_t* data, int len) {
       return;
     }
     const TelemPkt* t = (const TelemPkt*)data;
-    // Only apply rover quaternion when rover IMU is genuinely online and calibrated (CAL_GYRO_OK)
-    if (t->calFlags & CAL_GYRO_OK) {
-      float qMagSq = (float)t->q[0]*t->q[0] + (float)t->q[1]*t->q[1] + (float)t->q[2]*t->q[2] + (float)t->q[3]*t->q[3];
-      if (qMagSq > 50000000.0f && !qmi.isConnected) {
-        telemetry.q = {t->q[0] / 16384.0f, t->q[1] / 16384.0f, t->q[2] / 16384.0f, t->q[3] / 16384.0f};
-      }
+    float qMagSq = (float)t->q[0]*t->q[0] + (float)t->q[1]*t->q[1] + (float)t->q[2]*t->q[2] + (float)t->q[3]*t->q[3];
+    if (qMagSq > 50000000.0f) {
+      telemetry.q.w = t->q[0] / 16384.0f;
+      telemetry.q.x = t->q[1] / 16384.0f;
+      telemetry.q.y = t->q[2] / 16384.0f;
+      telemetry.q.z = t->q[3] / 16384.0f;
+      float q0 = telemetry.q.w, q1 = telemetry.q.x, q2 = telemetry.q.y, q3 = telemetry.q.z;
+      float sinp = 2.0f * (q0 * q2 - q3 * q1);
+      telemetry.imuRollDeg = atan2f(2.0f * (q0 * q1 + q2 * q3), 1.0f - 2.0f * (q1 * q1 + q2 * q2)) * RAD_TO_DEG;
+      telemetry.imuPitchDeg = (fabsf(sinp) >= 1.0f) ? copysignf(90.0f, sinp) : asinf(sinp) * RAD_TO_DEG;
+      float y = atan2f(2.0f * (q0 * q3 + q1 * q2), 1.0f - 2.0f * (q2 * q2 + q3 * q3)) * RAD_TO_DEG;
+      telemetry.imuYawDeg = fmodf(y + 3600.0f, 360.0f);
+      telemetry.roverHeading = (int16_t)lroundf(telemetry.imuYawDeg);
+    }
+    for (int i = 0; i < 3; i++) {
+      telemetry.gyro[i] = t->gyro[i] / 16.0f;
+      telemetry.acc[i] = t->acc[i] / 1000.0f;
     }
     telemetry.ultraMm = t->ultraMm;
     telemetry.tofMm[0] = t->tofMm[0]; telemetry.tofMm[1] = t->tofMm[1];
@@ -202,18 +213,7 @@ void sendPacket(uint8_t type, int8_t x, int8_t y, int8_t z, int16_t arg, uint8_t
                      (telemetry.crashProtect ? 0 : FLAG_CRASH_OFF);
   pkt.flags = flags | sysFlags;
   pkt.seq = ++packetSeq;
-  if (type == PKT_DRIVE && arg == 0) {
-    if ((pkt.seq & 1) == 0) {
-      int8_t p8 = (int8_t)constrain((int)lroundf(telemetry.imuPitchDeg), -90, 90);
-      int8_t r8 = (int8_t)constrain((int)lroundf(telemetry.imuRollDeg), -90, 90);
-      pkt.arg = (int16_t)(((uint16_t)(uint8_t)p8 << 8) | (uint8_t)r8);
-    } else {
-      float remYaw = fmodf((localYaw * RAD_TO_DEG) + telemetry.inspectYaw + 3600.0f, 360.0f);
-      pkt.arg = (int16_t)lroundf(remYaw * 10.0f);
-    }
-  } else {
-    pkt.arg = arg;
-  }
+  pkt.arg = (type == PKT_DRIVE) ? 0 : arg;
 
   static const uint8_t bcastMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
   if (roverLocked && telemetry.linked) {
@@ -266,7 +266,8 @@ float applyExpo(float val, float expo) {
 void loadPreferences() {
   if (prefs.begin("s3remote", true)) {
     telemetry.speedLimit = prefs.getUChar("spd", 60);
-    telemetry.autoSpeed = prefs.getUChar("aspd", 45);
+    telemetry.autoSpeed = prefs.getUChar("aspd", 70);
+    if (telemetry.autoSpeed < 55) telemetry.autoSpeed = 70;
     telemetry.deadzonePct = prefs.getUChar("dead", 6);
     telemetry.expoPct = prefs.getUChar("expo", 45);
     telemetry.airAxis = prefs.getUChar("aax", 0);
@@ -546,45 +547,14 @@ void loop() {
       filteredPitch += (rawPitch - filteredPitch) * alpha;
       filteredRoll += (rawRoll - filteredRoll) * alpha;
 
-      // Fuse Rover MMC5603 magnetic compass heading (telemetry.roverHeading) with S3 Remote gyro yaw!
-      float magHdgDeg = (telemetry.linked && (telemetry.calFlags & CAL_MAG_OK)) ? (float)((telemetry.roverHeading % 360 + 360) % 360) : 0.0f;
-      float combinedYawDeg = fmodf(magHdgDeg + (localYaw * RAD_TO_DEG) + 3600.0f, 360.0f);
-      float combinedYawRad = combinedYawDeg * DEG_TO_RAD;
-
-      // Viewer-frame quaternion: Q = Qx(roll) * Qy(pitch) * Qz(-yaw)
-      float rRad = filteredRoll * 0.5f;
-      float pRad = filteredPitch * 0.5f;
-      float zRad = -combinedYawRad * 0.5f;
-      float cr = cosf(rRad), sr = sinf(rRad);
-      float cp = cosf(pRad), sp = sinf(pRad);
-      float cz = cosf(zRad), sz = sinf(zRad);
-
-      Quat localQ;
-      localQ.w = cr * cp * cz - sr * sp * sz;
-      localQ.x = sr * cp * cz + cr * sp * sz;
-      localQ.y = cr * sp * cz - sr * cp * sz;
-      localQ.z = sr * sp * cz + cr * cp * sz;
-
-      telemetry.q = localQ;
-      telemetry.gyro[0] = cgx;
-      telemetry.gyro[1] = cgy;
-      telemetry.gyro[2] = worldYawRate;
-      telemetry.acc[0] = -qmi.ax;
-      telemetry.acc[1] = qmi.ay;
-      telemetry.acc[2] = -qmi.az;
-      telemetry.imuPitchDeg = filteredPitch * RAD_TO_DEG;
-      telemetry.imuRollDeg = filteredRoll * RAD_TO_DEG;
-      telemetry.imuYawDeg = combinedYawDeg;
-      if (!(telemetry.calFlags & CAL_MAG_OK)) {
-        telemetry.roverHeading = ((int16_t)lroundf(telemetry.imuYawDeg + telemetry.inspectYaw) % 360 + 360) % 360;
-      }
+      telemetry.ctrlPitchDeg = filteredPitch * RAD_TO_DEG;
+      telemetry.ctrlRollDeg = filteredRoll * RAD_TO_DEG;
 
       static unsigned long lastImuLog = 0;
       if (now - lastImuLog >= 1000) {
         lastImuLog = now;
-        Serial.printf("[IMU-LIVE] R:%+5.1f P:%+5.1f Y:%+5.1f (Mag:%d) | Ax:%+.2f Ay:%+.2f Az:%+.2f | Gz:%+.1f\n",
-                      telemetry.imuRollDeg, telemetry.imuPitchDeg, telemetry.imuYawDeg, telemetry.roverHeading,
-                      qmi.ax, qmi.ay, qmi.az, worldYawRate);
+        Serial.printf("[CTRL-TILT] R:%+5.1f P:%+5.1f | RoverHdg:%d\n",
+                      telemetry.ctrlRollDeg, telemetry.ctrlPitchDeg, telemetry.roverHeading);
       }
     }
   }
@@ -883,8 +853,8 @@ void loop() {
       lastAirRampTime = now;
       if (dtRamp <= 0.0f || dtRamp > 0.1f) dtRamp = 0.02f;
 
-      float pDeg = telemetry.imuPitchDeg;
-      float rDeg = telemetry.imuRollDeg;
+      float pDeg = telemetry.ctrlPitchDeg;
+      float rDeg = telemetry.ctrlRollDeg;
 
       // User selectable Air Gyro Axis mapping:
       float throtDeg = pDeg;

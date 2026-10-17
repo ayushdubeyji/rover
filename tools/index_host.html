@@ -2,6 +2,9 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Mecanum Robot Live Telemetry & Control</title>
     <style>
@@ -264,436 +267,11 @@
             cursor: pointer;
         }
     </style>
-
     <!-- Three.js + Local GLTFLoader + MeshoptDecoder -->
-    <script src="/static/js/three.min.js">
-        // --- 3D Digital Twin Viewport ---
-        const container3D = document.getElementById('rover-3d-container');
-        let roverMesh = null;
-        let hudYawEl = document.getElementById('hud-yaw');
-        let statusEl = document.getElementById('model-status');
-
-        if (container3D && typeof THREE !== 'undefined') {
-            const scene = new THREE.Scene();
-            scene.background = new THREE.Color(0x070a13);
-
-            const camera = new THREE.PerspectiveCamera(40, container3D.clientWidth / container3D.clientHeight, 0.1, 100);
-            camera.position.set(1.4, 0.9, 1.8);
-
-            const renderer = new THREE.WebGLRenderer({ antialias: true });
-            renderer.setSize(container3D.clientWidth, container3D.clientHeight);
-            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-            renderer.shadowMap.enabled = true;
-            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-            if (THREE.sRGBEncoding) renderer.outputEncoding = THREE.sRGBEncoding;
-            container3D.appendChild(renderer.domElement);
-
-            const controls = new THREE.OrbitControls(camera, renderer.domElement);
-            controls.enableDamping = true;
-            controls.dampingFactor = 0.05;
-            controls.maxPolarAngle = Math.PI / 2 + 0.1;
-
-            const ambientLight = new THREE.AmbientLight(0xffffff, 1.3);
-            scene.add(ambientLight);
-
-            const dirLight = new THREE.DirectionalLight(0xffffff, 2.2);
-            dirLight.position.set(3, 5, 2);
-            dirLight.castShadow = true;
-            scene.add(dirLight);
-
-            const fillLight = new THREE.DirectionalLight(0x38bdf8, 0.9);
-            fillLight.position.set(-3, 2, -2);
-            scene.add(fillLight);
-
-            const grid = new THREE.GridHelper(4, 20, 0x3b82f6, 0x1e293b);
-            grid.position.y = -0.22;
-            scene.add(grid);
-
-            const loader = new THREE.GLTFLoader();
-            if (typeof MeshoptDecoder !== 'undefined') {
-                loader.setMeshoptDecoder(MeshoptDecoder);
-            }
-
-            statusEl.textContent = 'Loading 3D model & PBR textures...';
-            loader.load('/static/rover_model.glb', (gltf) => {
-                roverMesh = gltf.scene;
-                const box = new THREE.Box3().setFromObject(roverMesh);
-                const center = box.getCenter(new THREE.Vector3());
-                roverMesh.position.sub(center);
-                roverMesh.position.y += 0.05;
-                
-                roverMesh.traverse((child) => {
-                    if (child.isMesh) {
-                        child.castShadow = true;
-                        child.receiveShadow = true;
-                        if (child.material) {
-                            child.material.roughness = 0.55;
-                            child.material.metalness = 0.35;
-                        }
-                    }
-                });
-
-                scene.add(roverMesh);
-                statusEl.textContent = '3D Digital Twin Active';
-                statusEl.style.color = '#10b981';
-            }, (xhr) => {
-                if (xhr.lengthComputable) {
-                    const pct = Math.round((xhr.loaded / xhr.total) * 100);
-                    statusEl.textContent = `Loading ${pct}%`;
-                }
-            }, (err) => {
-                console.error('Error loading 3D model:', err);
-                statusEl.textContent = 'Model Load Error';
-                statusEl.style.color = '#ef4444';
-            });
-
-            function animate3D() {
-                requestAnimationFrame(animate3D);
-                controls.update();
-                renderer.render(scene, camera);
-            }
-            animate3D();
-
-            window.addEventListener('resize', () => {
-                if (!container3D || !renderer || !camera) return;
-                camera.aspect = container3D.clientWidth / container3D.clientHeight;
-                camera.updateProjectionMatrix();
-                renderer.setSize(container3D.clientWidth, container3D.clientHeight);
-            });
-        }
-
-        // Hook telemetry update into 3D rover mesh
-        const origUpdateTelemetryUI = updateTelemetryUI;
-        updateTelemetryUI = function(data) {
-            origUpdateTelemetryUI(data);
-            if (roverMesh && data.yaw !== undefined) {
-                roverMesh.rotation.y = -data.yaw * Math.PI / 180;
-                if (hudYawEl) hudYawEl.textContent = data.yaw.toFixed(1) + '°';
-            }
-        };
-    </script>
-
-    <script src="/static/js/meshopt_decoder.js">
-        // --- 3D Digital Twin Viewport ---
-        const container3D = document.getElementById('rover-3d-container');
-        let roverMesh = null;
-        let hudYawEl = document.getElementById('hud-yaw');
-        let statusEl = document.getElementById('model-status');
-
-        if (container3D && typeof THREE !== 'undefined') {
-            const scene = new THREE.Scene();
-            scene.background = new THREE.Color(0x070a13);
-
-            const camera = new THREE.PerspectiveCamera(40, container3D.clientWidth / container3D.clientHeight, 0.1, 100);
-            camera.position.set(1.4, 0.9, 1.8);
-
-            const renderer = new THREE.WebGLRenderer({ antialias: true });
-            renderer.setSize(container3D.clientWidth, container3D.clientHeight);
-            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-            renderer.shadowMap.enabled = true;
-            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-            if (THREE.sRGBEncoding) renderer.outputEncoding = THREE.sRGBEncoding;
-            container3D.appendChild(renderer.domElement);
-
-            const controls = new THREE.OrbitControls(camera, renderer.domElement);
-            controls.enableDamping = true;
-            controls.dampingFactor = 0.05;
-            controls.maxPolarAngle = Math.PI / 2 + 0.1;
-
-            const ambientLight = new THREE.AmbientLight(0xffffff, 1.3);
-            scene.add(ambientLight);
-
-            const dirLight = new THREE.DirectionalLight(0xffffff, 2.2);
-            dirLight.position.set(3, 5, 2);
-            dirLight.castShadow = true;
-            scene.add(dirLight);
-
-            const fillLight = new THREE.DirectionalLight(0x38bdf8, 0.9);
-            fillLight.position.set(-3, 2, -2);
-            scene.add(fillLight);
-
-            const grid = new THREE.GridHelper(4, 20, 0x3b82f6, 0x1e293b);
-            grid.position.y = -0.22;
-            scene.add(grid);
-
-            const loader = new THREE.GLTFLoader();
-            if (typeof MeshoptDecoder !== 'undefined') {
-                loader.setMeshoptDecoder(MeshoptDecoder);
-            }
-
-            statusEl.textContent = 'Loading 3D model & PBR textures...';
-            loader.load('/static/rover_model.glb', (gltf) => {
-                roverMesh = gltf.scene;
-                const box = new THREE.Box3().setFromObject(roverMesh);
-                const center = box.getCenter(new THREE.Vector3());
-                roverMesh.position.sub(center);
-                roverMesh.position.y += 0.05;
-                
-                roverMesh.traverse((child) => {
-                    if (child.isMesh) {
-                        child.castShadow = true;
-                        child.receiveShadow = true;
-                        if (child.material) {
-                            child.material.roughness = 0.55;
-                            child.material.metalness = 0.35;
-                        }
-                    }
-                });
-
-                scene.add(roverMesh);
-                statusEl.textContent = '3D Digital Twin Active';
-                statusEl.style.color = '#10b981';
-            }, (xhr) => {
-                if (xhr.lengthComputable) {
-                    const pct = Math.round((xhr.loaded / xhr.total) * 100);
-                    statusEl.textContent = `Loading ${pct}%`;
-                }
-            }, (err) => {
-                console.error('Error loading 3D model:', err);
-                statusEl.textContent = 'Model Load Error';
-                statusEl.style.color = '#ef4444';
-            });
-
-            function animate3D() {
-                requestAnimationFrame(animate3D);
-                controls.update();
-                renderer.render(scene, camera);
-            }
-            animate3D();
-
-            window.addEventListener('resize', () => {
-                if (!container3D || !renderer || !camera) return;
-                camera.aspect = container3D.clientWidth / container3D.clientHeight;
-                camera.updateProjectionMatrix();
-                renderer.setSize(container3D.clientWidth, container3D.clientHeight);
-            });
-        }
-
-        // Hook telemetry update into 3D rover mesh
-        const origUpdateTelemetryUI = updateTelemetryUI;
-        updateTelemetryUI = function(data) {
-            origUpdateTelemetryUI(data);
-            if (roverMesh && data.yaw !== undefined) {
-                roverMesh.rotation.y = -data.yaw * Math.PI / 180;
-                if (hudYawEl) hudYawEl.textContent = data.yaw.toFixed(1) + '°';
-            }
-        };
-    </script>
-
-    <script src="/static/js/GLTFLoader.js">
-        // --- 3D Digital Twin Viewport ---
-        const container3D = document.getElementById('rover-3d-container');
-        let roverMesh = null;
-        let hudYawEl = document.getElementById('hud-yaw');
-        let statusEl = document.getElementById('model-status');
-
-        if (container3D && typeof THREE !== 'undefined') {
-            const scene = new THREE.Scene();
-            scene.background = new THREE.Color(0x070a13);
-
-            const camera = new THREE.PerspectiveCamera(40, container3D.clientWidth / container3D.clientHeight, 0.1, 100);
-            camera.position.set(1.4, 0.9, 1.8);
-
-            const renderer = new THREE.WebGLRenderer({ antialias: true });
-            renderer.setSize(container3D.clientWidth, container3D.clientHeight);
-            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-            renderer.shadowMap.enabled = true;
-            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-            if (THREE.sRGBEncoding) renderer.outputEncoding = THREE.sRGBEncoding;
-            container3D.appendChild(renderer.domElement);
-
-            const controls = new THREE.OrbitControls(camera, renderer.domElement);
-            controls.enableDamping = true;
-            controls.dampingFactor = 0.05;
-            controls.maxPolarAngle = Math.PI / 2 + 0.1;
-
-            const ambientLight = new THREE.AmbientLight(0xffffff, 1.3);
-            scene.add(ambientLight);
-
-            const dirLight = new THREE.DirectionalLight(0xffffff, 2.2);
-            dirLight.position.set(3, 5, 2);
-            dirLight.castShadow = true;
-            scene.add(dirLight);
-
-            const fillLight = new THREE.DirectionalLight(0x38bdf8, 0.9);
-            fillLight.position.set(-3, 2, -2);
-            scene.add(fillLight);
-
-            const grid = new THREE.GridHelper(4, 20, 0x3b82f6, 0x1e293b);
-            grid.position.y = -0.22;
-            scene.add(grid);
-
-            const loader = new THREE.GLTFLoader();
-            if (typeof MeshoptDecoder !== 'undefined') {
-                loader.setMeshoptDecoder(MeshoptDecoder);
-            }
-
-            statusEl.textContent = 'Loading 3D model & PBR textures...';
-            loader.load('/static/rover_model.glb', (gltf) => {
-                roverMesh = gltf.scene;
-                const box = new THREE.Box3().setFromObject(roverMesh);
-                const center = box.getCenter(new THREE.Vector3());
-                roverMesh.position.sub(center);
-                roverMesh.position.y += 0.05;
-                
-                roverMesh.traverse((child) => {
-                    if (child.isMesh) {
-                        child.castShadow = true;
-                        child.receiveShadow = true;
-                        if (child.material) {
-                            child.material.roughness = 0.55;
-                            child.material.metalness = 0.35;
-                        }
-                    }
-                });
-
-                scene.add(roverMesh);
-                statusEl.textContent = '3D Digital Twin Active';
-                statusEl.style.color = '#10b981';
-            }, (xhr) => {
-                if (xhr.lengthComputable) {
-                    const pct = Math.round((xhr.loaded / xhr.total) * 100);
-                    statusEl.textContent = `Loading ${pct}%`;
-                }
-            }, (err) => {
-                console.error('Error loading 3D model:', err);
-                statusEl.textContent = 'Model Load Error';
-                statusEl.style.color = '#ef4444';
-            });
-
-            function animate3D() {
-                requestAnimationFrame(animate3D);
-                controls.update();
-                renderer.render(scene, camera);
-            }
-            animate3D();
-
-            window.addEventListener('resize', () => {
-                if (!container3D || !renderer || !camera) return;
-                camera.aspect = container3D.clientWidth / container3D.clientHeight;
-                camera.updateProjectionMatrix();
-                renderer.setSize(container3D.clientWidth, container3D.clientHeight);
-            });
-        }
-
-        // Hook telemetry update into 3D rover mesh
-        const origUpdateTelemetryUI = updateTelemetryUI;
-        updateTelemetryUI = function(data) {
-            origUpdateTelemetryUI(data);
-            if (roverMesh && data.yaw !== undefined) {
-                roverMesh.rotation.y = -data.yaw * Math.PI / 180;
-                if (hudYawEl) hudYawEl.textContent = data.yaw.toFixed(1) + '°';
-            }
-        };
-    </script>
-
-    <script src="/static/js/OrbitControls.js">
-        // --- 3D Digital Twin Viewport ---
-        const container3D = document.getElementById('rover-3d-container');
-        let roverMesh = null;
-        let hudYawEl = document.getElementById('hud-yaw');
-        let statusEl = document.getElementById('model-status');
-
-        if (container3D && typeof THREE !== 'undefined') {
-            const scene = new THREE.Scene();
-            scene.background = new THREE.Color(0x070a13);
-
-            const camera = new THREE.PerspectiveCamera(40, container3D.clientWidth / container3D.clientHeight, 0.1, 100);
-            camera.position.set(1.4, 0.9, 1.8);
-
-            const renderer = new THREE.WebGLRenderer({ antialias: true });
-            renderer.setSize(container3D.clientWidth, container3D.clientHeight);
-            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-            renderer.shadowMap.enabled = true;
-            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-            if (THREE.sRGBEncoding) renderer.outputEncoding = THREE.sRGBEncoding;
-            container3D.appendChild(renderer.domElement);
-
-            const controls = new THREE.OrbitControls(camera, renderer.domElement);
-            controls.enableDamping = true;
-            controls.dampingFactor = 0.05;
-            controls.maxPolarAngle = Math.PI / 2 + 0.1;
-
-            const ambientLight = new THREE.AmbientLight(0xffffff, 1.3);
-            scene.add(ambientLight);
-
-            const dirLight = new THREE.DirectionalLight(0xffffff, 2.2);
-            dirLight.position.set(3, 5, 2);
-            dirLight.castShadow = true;
-            scene.add(dirLight);
-
-            const fillLight = new THREE.DirectionalLight(0x38bdf8, 0.9);
-            fillLight.position.set(-3, 2, -2);
-            scene.add(fillLight);
-
-            const grid = new THREE.GridHelper(4, 20, 0x3b82f6, 0x1e293b);
-            grid.position.y = -0.22;
-            scene.add(grid);
-
-            const loader = new THREE.GLTFLoader();
-            if (typeof MeshoptDecoder !== 'undefined') {
-                loader.setMeshoptDecoder(MeshoptDecoder);
-            }
-
-            statusEl.textContent = 'Loading 3D model & PBR textures...';
-            loader.load('/static/rover_model.glb', (gltf) => {
-                roverMesh = gltf.scene;
-                const box = new THREE.Box3().setFromObject(roverMesh);
-                const center = box.getCenter(new THREE.Vector3());
-                roverMesh.position.sub(center);
-                roverMesh.position.y += 0.05;
-                
-                roverMesh.traverse((child) => {
-                    if (child.isMesh) {
-                        child.castShadow = true;
-                        child.receiveShadow = true;
-                        if (child.material) {
-                            child.material.roughness = 0.55;
-                            child.material.metalness = 0.35;
-                        }
-                    }
-                });
-
-                scene.add(roverMesh);
-                statusEl.textContent = '3D Digital Twin Active';
-                statusEl.style.color = '#10b981';
-            }, (xhr) => {
-                if (xhr.lengthComputable) {
-                    const pct = Math.round((xhr.loaded / xhr.total) * 100);
-                    statusEl.textContent = `Loading ${pct}%`;
-                }
-            }, (err) => {
-                console.error('Error loading 3D model:', err);
-                statusEl.textContent = 'Model Load Error';
-                statusEl.style.color = '#ef4444';
-            });
-
-            function animate3D() {
-                requestAnimationFrame(animate3D);
-                controls.update();
-                renderer.render(scene, camera);
-            }
-            animate3D();
-
-            window.addEventListener('resize', () => {
-                if (!container3D || !renderer || !camera) return;
-                camera.aspect = container3D.clientWidth / container3D.clientHeight;
-                camera.updateProjectionMatrix();
-                renderer.setSize(container3D.clientWidth, container3D.clientHeight);
-            });
-        }
-
-        // Hook telemetry update into 3D rover mesh
-        const origUpdateTelemetryUI = updateTelemetryUI;
-        updateTelemetryUI = function(data) {
-            origUpdateTelemetryUI(data);
-            if (roverMesh && data.yaw !== undefined) {
-                roverMesh.rotation.y = -data.yaw * Math.PI / 180;
-                if (hudYawEl) hudYawEl.textContent = data.yaw.toFixed(1) + '°';
-            }
-        };
-    </script>
-
+    <script src="/static/js/three.min.js"></script>
+    <script src="/static/js/meshopt_decoder.js"></script>
+    <script src="/static/js/GLTFLoader.js"></script>
+    <script src="/static/js/OrbitControls.js"></script>
 </head>
 <body>
 
@@ -732,6 +310,69 @@
             </div>
         </div>
 
+        
+        <!-- Card 1.5: Dedicated Precision & Finer Controls -->
+        <div class="card">
+            <div class="card-title" style="display: flex; justify-content: space-between; align-items: center;">
+                <span>Precision & Finer Controls</span>
+                <span id="trim-status" style="font-size: 0.72rem; color: var(--accent-green); font-family: monospace;">TRIM BALANCED</span>
+            </div>
+            
+            <!-- Speed Limit Fine Adjustment -->
+            <div class="control-row" style="margin-bottom: 10px;">
+                <label style="display: flex; justify-content: space-between; font-size: 0.78rem;">
+                    <span>Speed Ceiling (Fine 5% Steps):</span>
+                    <span id="speed-limit-val" style="color: var(--accent-green); font-weight: bold;">60%</span>
+                </label>
+                <input type="range" id="speed-limit-slider" min="10" max="100" step="5" value="60" oninput="updateSpeedLimit(this.value); this.blur();">
+            </div>
+
+            <!-- Steering & Strafe Fine Trim -->
+            <div style="background: rgba(15,23,42,0.6); padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border); margin-bottom: 10px;">
+                <div style="font-size: 0.72rem; color: var(--text-dim); margin-bottom: 6px; font-weight: 600; text-transform: uppercase;">Kinematic Trims (-20% .. +20%)</div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                    <div>
+                        <label style="font-size: 0.72rem; display: flex; justify-content: space-between;">
+                            <span>Fwd Trim</span><span id="trim-vx-val" style="color:#38bdf8;">0%</span>
+                        </label>
+                        <input type="range" id="trim-vx" min="-20" max="20" step="1" value="0" style="height:4px;" oninput="updateTrim('vx', this.value); this.blur();">
+                    </div>
+                    <div>
+                        <label style="font-size: 0.72rem; display: flex; justify-content: space-between;">
+                            <span>Strafe Trim</span><span id="trim-vy-val" style="color:#38bdf8;">0%</span>
+                        </label>
+                        <input type="range" id="trim-vy" min="-20" max="20" step="1" value="0" style="height:4px;" oninput="updateTrim('vy', this.value); this.blur();">
+                    </div>
+                </div>
+                <div style="margin-top: 6px;">
+                    <label style="font-size: 0.72rem; display: flex; justify-content: space-between;">
+                        <span>Yaw Trim (Gyro Drift Compensation)</span><span id="trim-vz-val" style="color:#38bdf8;">0%</span>
+                    </label>
+                    <input type="range" id="trim-vz" min="-20" max="20" step="1" value="0" style="height:4px;" oninput="updateTrim('vz', this.value); this.blur();">
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px;">
+                    <button onclick="resetTrims()" style="padding: 3px 8px; font-size: 0.7rem; background: #1e293b; color: #94a3b8; border: 1px solid #334155; border-radius: 4px; cursor: pointer;">Zero Trims</button>
+                    <span style="font-size: 0.68rem; color: #64748b;">Keyboard: WASD / Q,E Rotate</span>
+                </div>
+            </div>
+
+            <!-- Micro-Step Nudge Buttons -->
+            <div style="display: flex; gap: 6px; align-items: center; justify-content: space-between; margin-bottom: 10px;">
+                <div style="font-size: 0.72rem; color: var(--text-dim);">Micro-Docking:</div>
+                <div style="display: flex; gap: 4px;">
+                    <button class="mode-btn" style="padding: 4px 10px; font-size: 0.75rem;" onclick="microStep(0, 0.25, 0)"> L</button>
+                    <button class="mode-btn" style="padding: 4px 10px; font-size: 0.75rem;" onclick="microStep(0.25, 0, 0)">? F</button>
+                    <button class="mode-btn" style="padding: 4px 10px; font-size: 0.75rem;" onclick="microStep(-0.25, 0, 0)">? B</button>
+                    <button class="mode-btn" style="padding: 4px 10px; font-size: 0.75rem;" onclick="microStep(0, -0.25, 0)">? R</button>
+                </div>
+            </div>
+
+            <!-- Emergency Stop -->
+            <button onclick="triggerEStop()" style="width: 100%; padding: 8px; font-weight: bold; font-size: 0.85rem; letter-spacing: 1px; color: #fff; background: linear-gradient(135deg, #ef4444, #991b1b); border: 1px solid #f87171; border-radius: 6px; cursor: pointer; text-shadow: 0 1px 2px rgba(0,0,0,0.5); box-shadow: 0 2px 8px rgba(239,68,68,0.3);">
+                ? EMERGENCY STOP (SPACE)
+            </button>
+        </div>
+
         <!-- Card 2: Dual Virtual Joysticks -->
         <div class="card">
             <div class="card-title">Omnidirectional Control</div>
@@ -749,19 +390,19 @@
 
         <!-- Card 3: Live Sensor Readings & Compass -->
         <div class="card">
-            <div class="card-title">Fused Sensors & Compass</div>
+            <div class="card-title">Fused Sensors & Odometry</div>
             <div class="stats-grid">
+                <div class="stat-box">
+                    <div class="stat-value" id="val-pos" style="color: #4ade80;">X:0.00 Y:0.00m</div>
+                    <div class="stat-label">Live Odometry (X, Y)</div>
+                </div>
                 <div class="stat-box">
                     <div class="stat-value" id="val-yaw">0.0°</div>
                     <div class="stat-label">Fused Yaw / Mag</div>
                 </div>
                 <div class="stat-box">
-                    <div class="stat-value" id="val-ticks">0</div>
-                    <div class="stat-label">Encoder Ticks (GP6)</div>
-                </div>
-                <div class="stat-box">
-                    <div class="stat-value" id="val-tickrate">0.0 Hz</div>
-                    <div class="stat-label">Tick Rate</div>
+                    <div class="stat-value" id="val-range">US: -- ToF: --</div>
+                    <div class="stat-label">Range Sensors</div>
                 </div>
                 <div class="stat-box">
                     <div class="stat-value" id="val-motors">0, 0, 0, 0</div>
@@ -773,18 +414,28 @@
         </div>
 
         
-        <!-- Card 3D: Live 3D Rover Digital Twin -->
+        <!-- Card 3D: Live 3D Rover Digital Twin & Arena Simulator -->
         <div class="card" style="grid-column: 1 / -1;">
-            <div class="card-title" style="display: flex; justify-content: space-between; align-items: center;">
-                <span>Rover 3D Digital Twin (PBR Textures)</span>
-                <span id="model-status" style="font-size: 0.75rem; color: #10b981; font-weight: normal;">Initializing 3D Engine...</span>
-            </div>
-            <div id="rover-3d-container" style="width: 100%; height: 380px; border-radius: 8px; overflow: hidden; background: #070a13; position: relative;">
-                <div style="position: absolute; bottom: 8px; left: 12px; font-size: 0.72rem; color: #64748b; font-family: monospace; pointer-events: none; z-index: 5;">
-                    Orbit: Left-Click Drag · Pan: Right-Click Drag · Zoom: Scroll
+            <div class="card-title" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="display: flex; align-items: center; gap: 6px;">
+                        <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #38bdf8; box-shadow: 0 0 8px #38bdf8;"></span>
+                        Rover 3D Digital Twin & Arena Simulator
+                    </span>
+                    <span id="model-status" style="font-size: 0.75rem; color: #10b981; font-weight: normal;">Initializing 3D Engine...</span>
                 </div>
-                <div id="telemetry-hud-3d" style="position: absolute; top: 10px; right: 12px; font-size: 0.75rem; color: #38bdf8; font-family: monospace; z-index: 5; background: rgba(15,23,42,0.8); padding: 4px 10px; border-radius: 4px; border: 1px solid #1e293b;">
-                    Orientation: <span id="hud-yaw">0.0°</span>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                    <button id="btn-cam-mode" style="background: #1e293b; color: #38bdf8; border: 1px solid #334155; padding: 4px 10px; border-radius: 4px; font-size: 0.72rem; cursor: pointer; transition: all 0.2s;">🎥 Chase Cam: OFF</button>
+                    <button id="btn-center-rover" style="background: #1e293b; color: #94a3b8; border: 1px solid #334155; padding: 4px 10px; border-radius: 4px; font-size: 0.72rem; cursor: pointer; transition: all 0.2s;">🎯 Center</button>
+                    <button id="btn-clear-trail" style="background: #1e293b; color: #94a3b8; border: 1px solid #334155; padding: 4px 10px; border-radius: 4px; font-size: 0.72rem; cursor: pointer; transition: all 0.2s;">🧹 Clear Trail</button>
+                </div>
+            </div>
+            <div id="rover-3d-container" style="width: 100%; height: 480px; border-radius: 8px; overflow: hidden; background: #070a13; position: relative;">
+                <div style="position: absolute; bottom: 8px; left: 12px; font-size: 0.72rem; color: #64748b; font-family: monospace; pointer-events: none; z-index: 5;">
+                    Orbit: Left Drag · Pan: Right Drag · Zoom: Scroll · Chase: Toggle Above
+                </div>
+                <div id="telemetry-hud-3d" style="position: absolute; top: 10px; right: 12px; font-size: 0.75rem; color: #38bdf8; font-family: monospace; z-index: 5; background: rgba(15,23,42,0.85); padding: 5px 12px; border-radius: 6px; border: 1px solid #1e293b; backdrop-filter: blur(4px);">
+                    <span id="hud-yaw">0.0°</span> | <span id="hud-pos" style="color: #4ade80;">X: 0.00m Y: 0.00m</span>
                 </div>
             </div>
         </div>
@@ -993,12 +644,18 @@
             const magDeg = ((t.mag_heading || 0.0) * 180 / Math.PI).toFixed(1);
             const tickRate = (t.tick_rate || 0.0).toFixed(1);
 
-            document.getElementById('val-yaw').innerText = `${yawDeg}° / ${magDeg}°`;
-            document.getElementById('val-ticks').innerText = t.encoder_ticks;
-            document.getElementById('val-tickrate').innerText = tickRate + " Hz";
-            document.getElementById('val-motors').innerText = `${t.pwm_fl}, ${t.pwm_fr}, ${t.pwm_rl}, ${t.pwm_rr}`;
-            document.getElementById('chart-heading-val').innerText = `${yawDeg}° / ${magDeg}°`;
-            document.getElementById('chart-tickrate-val').innerText = `${tickRate} Hz`;
+            const elYaw = document.getElementById('val-yaw');
+            if (elYaw) elYaw.innerText = `${yawDeg}° / ${magDeg}°`;
+            const elTicks = document.getElementById('val-ticks');
+            if (elTicks) elTicks.innerText = t.encoder_ticks || 0;
+            const elTickRate = document.getElementById('val-tickrate');
+            if (elTickRate) elTickRate.innerText = tickRate + " Hz";
+            const elMotors = document.getElementById('val-motors');
+            if (elMotors) elMotors.innerText = `${t.pwm_fl || 0}, ${t.pwm_fr || 0}, ${t.pwm_rl || 0}, ${t.pwm_rr || 0}`;
+            const elChartHead = document.getElementById('chart-heading-val');
+            if (elChartHead) elChartHead.innerText = `${yawDeg}° / ${magDeg}°`;
+            const elChartTR = document.getElementById('chart-tickrate-val');
+            if (elChartTR) elChartTR.innerText = `${tickRate} Hz`;
 
             // Push to rolling history
             histYaw.push(t.yaw * 180 / Math.PI);
@@ -1185,23 +842,146 @@
         // Heartbeat send interval
         setInterval(sendControl, 50);
 
+        
+        // --- Precision & Finer Controls State ---
+        let speedCeiling = 0.60;
+        let trimVx = 0, trimVy = 0, trimVz = 0;
+
+        function updateSpeedLimit(val) {
+            speedCeiling = parseInt(val) / 100.0;
+            document.getElementById('speed-limit-val').innerText = val + '%';
+            sendControl();
+        }
+
+        function updateTrim(axis, val) {
+            const v = parseInt(val) / 100.0;
+            if (axis === 'vx') { trimVx = v; document.getElementById('trim-vx-val').innerText = (val > 0 ? '+' : '') + val + '%'; }
+            if (axis === 'vy') { trimVy = v; document.getElementById('trim-vy-val').innerText = (val > 0 ? '+' : '') + val + '%'; }
+            if (axis === 'vz') { trimVz = v; document.getElementById('trim-vz-val').innerText = (val > 0 ? '+' : '') + val + '%'; }
+            
+            const hasTrim = (trimVx !== 0 || trimVy !== 0 || trimVz !== 0);
+            const statusEl = document.getElementById('trim-status');
+            if (statusEl) {
+                statusEl.innerText = hasTrim ? 'ACTIVE TRIMS' : 'TRIM BALANCED';
+                statusEl.style.color = hasTrim ? 'var(--accent-amber)' : 'var(--accent-green)';
+            }
+            sendControl();
+        }
+
+        function resetTrims() {
+            trimVx = 0; trimVy = 0; trimVz = 0;
+            document.getElementById('trim-vx').value = 0;
+            document.getElementById('trim-vy').value = 0;
+            document.getElementById('trim-vz').value = 0;
+            document.getElementById('trim-vx-val').innerText = '0%';
+            document.getElementById('trim-vy-val').innerText = '0%';
+            document.getElementById('trim-vz-val').innerText = '0%';
+            const statusEl = document.getElementById('trim-status');
+            if (statusEl) { statusEl.innerText = 'TRIM BALANCED'; statusEl.style.color = 'var(--accent-green)'; }
+            sendControl();
+        }
+
+        function microStep(dx, dy, dz) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            const payload = {
+                type: "control",
+                vx: dx * speedCeiling,
+                vy: dy * speedCeiling,
+                vz: dz * speedCeiling,
+                pan: pan,
+                tilt: tilt
+            };
+            ws.send(JSON.stringify(payload));
+            setTimeout(() => {
+                if (vx === 0 && vy === 0 && vz === 0) {
+                    ws.send(JSON.stringify({ type: "control", vx: 0, vy: 0, vz: 0, pan: pan, tilt: tilt }));
+                }
+            }, 60);
+        }
+
+        function triggerEStop() {
+            vx = 0; vy = 0; vz = 0;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "control", vx: 0, vy: 0, vz: 0, pan: pan, tilt: tilt }));
+            }
+            if (typeof resetKnobs === 'function') resetKnobs();
+            const badge = document.getElementById('status-badge');
+            if (badge) {
+                badge.innerText = "E-STOP ENGAGED";
+                badge.className = "badge offline";
+                setTimeout(() => {
+                    badge.innerText = "ONLINE (20Hz)";
+                    badge.className = "badge online";
+                }, 1000);
+            }
+        }
+
+        // Global Keyboard Teleop (WASD + Q/E)
+        window.addEventListener('keydown', (e) => {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+            let updated = false;
+            if (e.code === 'KeyW') { vx = speedCeiling; updated = true; }
+            else if (e.code === 'KeyS') { vx = -speedCeiling; updated = true; }
+            if (e.code === 'KeyA') { vy = speedCeiling; updated = true; }
+            else if (e.code === 'KeyD') { vy = -speedCeiling; updated = true; }
+            if (e.code === 'KeyQ') { vz = speedCeiling; updated = true; }
+            else if (e.code === 'KeyE') { vz = -speedCeiling; updated = true; }
+            if (e.code === 'Space') { triggerEStop(); e.preventDefault(); return; }
+            if (updated) {
+                sendControl();
+                e.preventDefault();
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+            let updated = false;
+            if (e.code === 'KeyW' || e.code === 'KeyS') { vx = 0; updated = true; }
+            if (e.code === 'KeyA' || e.code === 'KeyD') { vy = 0; updated = true; }
+            if (e.code === 'KeyQ' || e.code === 'KeyE') { vz = 0; updated = true; }
+            if (updated) {
+                sendControl();
+                e.preventDefault();
+            }
+        });
+
         // Auto-connect
         window.addEventListener('DOMContentLoaded', connectWS);
     
-        // --- 3D Digital Twin Viewport ---
+        // --- 3D Digital Twin & Arena Simulator Engine ---
         const container3D = document.getElementById('rover-3d-container');
         let roverMesh = null;
+        let pivotGroup = null;
         let hudYawEl = document.getElementById('hud-yaw');
         let statusEl = document.getElementById('model-status');
+        let btnCamMode = document.getElementById('btn-cam-mode');
+        let btnCenterRover = document.getElementById('btn-center-rover');
+        let btnClearTrail = document.getElementById('btn-clear-trail');
+
+        let isChaseCam = false;
+        let liveWheelSpeeds = [0, 0, 0, 0];
+
+        // Trajectory trail buffer
+        const MAX_TRAIL_PTS = 600;
+        const trailPositions = new Float32Array(MAX_TRAIL_PTS * 3);
+        let trailCount = 0;
+        let trailLine = null;
+        let lastTrailX = 9999, lastTrailZ = 9999;
+
+        // Obstacle visualization meshes
+        let usCone = null, usDisc = null;
+        let tofLRay = null, tofLDisc = null;
+        let tofRRay = null, tofRDisc = null;
 
         if (container3D && typeof THREE !== 'undefined') {
             const scene = new THREE.Scene();
-            scene.background = new THREE.Color(0x070a13);
+            scene.background = new THREE.Color(0x060913);
+            scene.fog = new THREE.FogExp2(0x060913, 0.045);
 
-            const camera = new THREE.PerspectiveCamera(40, container3D.clientWidth / container3D.clientHeight, 0.1, 100);
-            camera.position.set(1.4, 0.9, 1.8);
+            const camera = new THREE.PerspectiveCamera(42, container3D.clientWidth / container3D.clientHeight, 0.08, 120);
+            camera.position.set(2.2, 1.6, 2.5);
 
-            const renderer = new THREE.WebGLRenderer({ antialias: true });
+            const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
             renderer.setSize(container3D.clientWidth, container3D.clientHeight);
             renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
             renderer.shadowMap.enabled = true;
@@ -1211,51 +991,192 @@
 
             const controls = new THREE.OrbitControls(camera, renderer.domElement);
             controls.enableDamping = true;
-            controls.dampingFactor = 0.05;
-            controls.maxPolarAngle = Math.PI / 2 + 0.1;
+            controls.dampingFactor = 0.06;
+            controls.maxPolarAngle = Math.PI / 2 - 0.02; // Keep camera above ground arena
+            controls.minDistance = 0.35;
+            controls.maxDistance = 25.0;
 
-            const ambientLight = new THREE.AmbientLight(0xffffff, 1.3);
+            // --- Studio Lighting Rig for PBR Textures ---
+            const ambientLight = new THREE.AmbientLight(0xffffff, 1.4);
             scene.add(ambientLight);
 
-            const dirLight = new THREE.DirectionalLight(0xffffff, 2.2);
-            dirLight.position.set(3, 5, 2);
-            dirLight.castShadow = true;
-            scene.add(dirLight);
+            const sunLight = new THREE.DirectionalLight(0xffffff, 2.6);
+            sunLight.position.set(4.0, 7.0, 3.5);
+            sunLight.castShadow = true;
+            sunLight.shadow.mapSize.width = 1024;
+            sunLight.shadow.mapSize.height = 1024;
+            sunLight.shadow.camera.near = 0.5;
+            sunLight.shadow.camera.far = 25;
+            sunLight.shadow.camera.left = -3;
+            sunLight.shadow.camera.right = 3;
+            sunLight.shadow.camera.top = 3;
+            sunLight.shadow.camera.bottom = -3;
+            sunLight.shadow.bias = -0.0005;
+            scene.add(sunLight);
 
-            const fillLight = new THREE.DirectionalLight(0x38bdf8, 0.9);
-            fillLight.position.set(-3, 2, -2);
-            scene.add(fillLight);
+            const skyFillLight = new THREE.DirectionalLight(0x38bdf8, 1.1);
+            skyFillLight.position.set(-4.0, 3.0, -3.0);
+            scene.add(skyFillLight);
 
-            const grid = new THREE.GridHelper(4, 20, 0x3b82f6, 0x1e293b);
-            grid.position.y = -0.22;
-            scene.add(grid);
+            const rimLight = new THREE.DirectionalLight(0x10b981, 0.8);
+            rimLight.position.set(0, -2.0, -4.0);
+            scene.add(rimLight);
 
+            // --- Arena Ground & Coordinate Grid ---
+            const gridHelper = new THREE.GridHelper(16, 80, 0x0284c7, 0x1e293b);
+            gridHelper.position.y = 0.0;
+            scene.add(gridHelper);
+
+            // Arena Origin Target Ring (0,0)
+            const originRingGeo = new THREE.RingGeometry(0.18, 0.22, 32);
+            originRingGeo.rotateX(-Math.PI / 2);
+            const originRingMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide, transparent: true, opacity: 0.6 });
+            const originRing = new THREE.Mesh(originRingGeo, originRingMat);
+            originRing.position.y = 0.002;
+            scene.add(originRing);
+
+            // Ground Floor Plane (Shadow Receiver)
+            const floorGeo = new THREE.PlaneGeometry(24, 24);
+            const floorMat = new THREE.MeshStandardMaterial({
+                color: 0x060913,
+                roughness: 0.9,
+                metalness: 0.1,
+                depthWrite: true
+            });
+            const floorMesh = new THREE.Mesh(floorGeo, floorMat);
+            floorMesh.rotateX(-Math.PI / 2);
+            floorMesh.position.y = -0.002;
+            floorMesh.receiveShadow = true;
+            scene.add(floorMesh);
+
+            // --- Trajectory Motion Trail ---
+            const trailGeo = new THREE.BufferGeometry();
+            trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPositions, 3));
+            trailGeo.setDrawRange(0, 0);
+            const trailMat = new THREE.LineBasicMaterial({
+                color: 0x38bdf8,
+                linewidth: 2,
+                transparent: true,
+                opacity: 0.85
+            });
+            trailLine = new THREE.Line(trailGeo, trailMat);
+            scene.add(trailLine);
+
+            function addTrailPoint(x, z) {
+                if (Math.hypot(x - lastTrailX, z - lastTrailZ) < 0.03) return; // 3cm threshold
+                lastTrailX = x;
+                lastTrailZ = z;
+
+                if (trailCount < MAX_TRAIL_PTS) {
+                    trailPositions[trailCount * 3 + 0] = x;
+                    trailPositions[trailCount * 3 + 1] = 0.015;
+                    trailPositions[trailCount * 3 + 2] = z;
+                    trailCount++;
+                } else {
+                    // Shift buffer left
+                    trailPositions.copyWithin(0, 3, MAX_TRAIL_PTS * 3);
+                    trailPositions[(MAX_TRAIL_PTS - 1) * 3 + 0] = x;
+                    trailPositions[(MAX_TRAIL_PTS - 1) * 3 + 1] = 0.015;
+                    trailPositions[(MAX_TRAIL_PTS - 1) * 3 + 2] = z;
+                }
+                trailGeo.attributes.position.needsUpdate = true;
+                trailGeo.setDrawRange(0, trailCount);
+            }
+
+            // --- Rover World Entity Rig ---
+            pivotGroup = new THREE.Group();
+            scene.add(pivotGroup);
+
+            // Heading & Rotation Rig inside Pivot Group
+            roverMesh = new THREE.Group();
+            pivotGroup.add(roverMesh);
+
+            // Ground Heading Projection Indicator
+            const dirArrowGeo = new THREE.ConeGeometry(0.08, 0.22, 16);
+            dirArrowGeo.rotateX(Math.PI / 2);
+            const dirArrowMat = new THREE.MeshBasicMaterial({ color: 0x10b981, transparent: true, opacity: 0.75 });
+            const dirArrow = new THREE.Mesh(dirArrowGeo, dirArrowMat);
+            dirArrow.position.set(0, 0.01, -0.28); // points towards -Z (North)
+            roverMesh.add(dirArrow);
+
+            // Compass Dial Ring under Rover
+            const compassRingGeo = new THREE.RingGeometry(0.32, 0.35, 32);
+            compassRingGeo.rotateX(-Math.PI / 2);
+            const compassRingMat = new THREE.MeshBasicMaterial({ color: 0x0284c7, transparent: true, opacity: 0.35, side: THREE.DoubleSide });
+            const compassRing = new THREE.Mesh(compassRingGeo, compassRingMat);
+            compassRing.position.y = 0.008;
+            roverMesh.add(compassRing);
+
+            // --- Obstacle Visualization Sensors ---
+            // 1. Ultrasonic Sensor Cone (Front Center)
+            const usConeGeo = new THREE.ConeGeometry(0.18, 0.6, 16, 1, true);
+            usConeGeo.rotateX(-Math.PI / 2);
+            usConeGeo.translate(0, 0, -0.3);
+            const usConeMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.22, wireframe: true });
+            usCone = new THREE.Mesh(usConeGeo, usConeMat);
+            usCone.position.set(0, 0.12, -0.16);
+            roverMesh.add(usCone);
+
+            const usDiscGeo = new THREE.RingGeometry(0.02, 0.12, 16);
+            const usDiscMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.65, side: THREE.DoubleSide });
+            usDisc = new THREE.Mesh(usDiscGeo, usDiscMat);
+            usDisc.position.set(0, 0.12, -0.6);
+            roverMesh.add(usDisc);
+
+            // 2. Dual ToF Beams (Left & Right, angled at 25°)
+            const tofGeo = new THREE.CylinderGeometry(0.004, 0.004, 0.5, 8);
+            tofGeo.rotateX(-Math.PI / 2);
+            tofGeo.translate(0, 0, -0.25);
+            const tofMatL = new THREE.MeshBasicMaterial({ color: 0x10b981, transparent: true, opacity: 0.6 });
+            tofLRay = new THREE.Mesh(tofGeo, tofMatL);
+            tofLRay.position.set(-0.12, 0.10, -0.15);
+            tofLRay.rotation.y = Math.PI * 0.15; // 27 deg left
+            roverMesh.add(tofLRay);
+
+            const tofMatR = new THREE.MeshBasicMaterial({ color: 0x10b981, transparent: true, opacity: 0.6 });
+            tofRRay = new THREE.Mesh(tofGeo.clone(), tofMatR);
+            tofRRay.position.set(0.12, 0.10, -0.15);
+            tofRRay.rotation.y = -Math.PI * 0.15; // 27 deg right
+            roverMesh.add(tofRRay);
+
+            // --- Load User's Authentic PBR 3D Rover Model ---
             const loader = new THREE.GLTFLoader();
             if (typeof MeshoptDecoder !== 'undefined') {
                 loader.setMeshoptDecoder(MeshoptDecoder);
             }
 
-            statusEl.textContent = 'Loading 3D model & PBR textures...';
+            statusEl.textContent = 'Loading 3D Rover Twin...';
+            let authenticRoverModel = null;
+
             loader.load('/static/rover_model.glb', (gltf) => {
-                roverMesh = gltf.scene;
-                const box = new THREE.Box3().setFromObject(roverMesh);
+                authenticRoverModel = gltf.scene;
+
+                // Center bounding box accurately
+                const box = new THREE.Box3().setFromObject(authenticRoverModel);
                 const center = box.getCenter(new THREE.Vector3());
-                roverMesh.position.sub(center);
-                roverMesh.position.y += 0.05;
-                
-                roverMesh.traverse((child) => {
+                const size = box.getSize(new THREE.Vector3());
+
+                authenticRoverModel.position.x = -center.x;
+                authenticRoverModel.position.z = -center.z;
+                // Place bottom of wheels flush with ground plane Y = 0
+                authenticRoverModel.position.y = -box.min.y;
+
+                // Native model front is -X. Rotate 90 deg clockwise to align front with -Z (North):
+                authenticRoverModel.rotation.y = Math.PI / 2;
+
+                authenticRoverModel.traverse((child) => {
                     if (child.isMesh) {
                         child.castShadow = true;
                         child.receiveShadow = true;
                         if (child.material) {
-                            child.material.roughness = 0.55;
-                            child.material.metalness = 0.35;
+                            child.material.roughness = Math.max(child.material.roughness || 0.5, 0.4);
+                            child.material.metalness = Math.min(child.material.metalness || 0.3, 0.6);
                         }
                     }
                 });
 
-                scene.add(roverMesh);
-                statusEl.textContent = '3D Digital Twin Active';
+                roverMesh.add(authenticRoverModel);
+                statusEl.textContent = '3D Digital Twin Active (Real PBR Rover)';
                 statusEl.style.color = '#10b981';
             }, (xhr) => {
                 if (xhr.lengthComputable) {
@@ -1263,13 +1184,74 @@
                     statusEl.textContent = `Loading ${pct}%`;
                 }
             }, (err) => {
-                console.error('Error loading 3D model:', err);
-                statusEl.textContent = 'Model Load Error';
-                statusEl.style.color = '#ef4444';
+                console.error('GLTF loading error:', err);
+                statusEl.textContent = 'Model Fallback Active';
+                statusEl.style.color = '#f59e0b';
             });
 
+            // Camera Mode Button Toggle
+            if (btnCamMode) {
+                btnCamMode.addEventListener('click', () => {
+                    isChaseCam = !isChaseCam;
+                    btnCamMode.textContent = isChaseCam ? '🎥 Chase Cam: ON' : '🎥 Chase Cam: OFF';
+                    btnCamMode.style.color = isChaseCam ? '#10b981' : '#38bdf8';
+                    btnCamMode.style.borderColor = isChaseCam ? '#10b981' : '#334155';
+                });
+            }
+
+            if (btnCenterRover) {
+                btnCenterRover.addEventListener('click', () => {
+                    controls.target.copy(pivotGroup.position);
+                    camera.position.set(pivotGroup.position.x + 1.8, pivotGroup.position.y + 1.4, pivotGroup.position.z + 2.0);
+                });
+            }
+
+            if (btnClearTrail) {
+                btnClearTrail.addEventListener('click', () => {
+                    trailCount = 0;
+                    trailGeo.setDrawRange(0, 0);
+                    trailGeo.attributes.position.needsUpdate = true;
+                });
+            }
+
+            // Disengage Chase Cam if user manually interacts with orbit controls
+            controls.addEventListener('start', () => {
+                if (isChaseCam) {
+                    isChaseCam = false;
+                    if (btnCamMode) {
+                        btnCamMode.textContent = '🎥 Chase Cam: OFF';
+                        btnCamMode.style.color = '#38bdf8';
+                        btnCamMode.style.borderColor = '#334155';
+                    }
+                }
+            });
+
+            // Render & Simulation Animation Loop
+            let lastAnimTime = performance.now();
             function animate3D() {
                 requestAnimationFrame(animate3D);
+                const now = performance.now();
+                const dt = Math.min((now - lastAnimTime) / 1000.0, 0.1);
+                lastAnimTime = now;
+
+                // Chase Camera Follow Logic
+                if (isChaseCam && pivotGroup && roverMesh) {
+                    const roverPos = pivotGroup.position;
+                    // Compute behind vector based on current rover yaw
+                    const yawAngle = roverMesh.rotation.y;
+                    const chaseDist = 1.6;
+                    const chaseHeight = 0.85;
+
+                    const desiredCamPos = new THREE.Vector3(
+                        roverPos.x + Math.sin(yawAngle) * chaseDist,
+                        roverPos.y + chaseHeight,
+                        roverPos.z + Math.cos(yawAngle) * chaseDist
+                    );
+
+                    camera.position.lerp(desiredCamPos, 0.08);
+                    controls.target.lerp(new THREE.Vector3(roverPos.x, roverPos.y + 0.15, roverPos.z), 0.1);
+                }
+
                 controls.update();
                 renderer.render(scene, camera);
             }
@@ -1283,13 +1265,116 @@
             });
         }
 
-        // Hook telemetry update into 3D rover mesh
+        // --- Hook Telemetry Update into 3D Rover Digital Twin & Arena Simulator ---
         const origUpdateTelemetryUI = updateTelemetryUI;
+        const hudPosEl = document.getElementById('hud-pos');
+        const valPosEl = document.getElementById('val-pos');
+        const valRangeEl = document.getElementById('val-range');
+        const statusBadgeEl = document.getElementById('status-badge');
+
         updateTelemetryUI = function(data) {
             origUpdateTelemetryUI(data);
-            if (roverMesh && data.yaw !== undefined) {
-                roverMesh.rotation.y = -data.yaw * Math.PI / 180;
-                if (hudYawEl) hudYawEl.textContent = data.yaw.toFixed(1) + '°';
+
+            const posX = Number(data.pos_x !== undefined ? data.pos_x : (data.pos_x_cm ? data.pos_x_cm / 100.0 : 0.0));
+            const posY = Number(data.pos_y !== undefined ? data.pos_y : (data.pos_y_cm ? data.pos_y_cm / 100.0 : 0.0));
+
+            // Update DOM telemetry indicators
+            if (valPosEl) valPosEl.innerText = `X:${posX.toFixed(2)} Y:${posY.toFixed(2)}m`;
+            if (hudPosEl) hudPosEl.innerText = `X: ${posX.toFixed(2)}m Y: ${posY.toFixed(2)}m`;
+
+            // Update online link badge
+            if (data.link_type && statusBadgeEl) {
+                statusBadgeEl.className = "badge online";
+                statusBadgeEl.innerText = `ONLINE (${data.link_type})`;
+            }
+
+            // Update range sensors in header
+            const usMm = Number(data.ultra_mm || 0);
+            const tofLMm = Number(data.tof_l_mm || (data.tof ? data.tof[0] : 0));
+            const tofRMm = Number(data.tof_r_mm || (data.tof ? data.tof[1] : 0));
+
+            if (valRangeEl) {
+                valRangeEl.innerText = `US:${Math.round(usMm / 10)}cm ToF:${Math.round(tofLMm / 10)}cm`;
+            }
+
+            // 1. Live 3D World Position Translation (Odometry)
+            if (pivotGroup) {
+                // In Three.js: +X is East, +Z is South (-Y in ROS REP-103)
+                pivotGroup.position.x = posX;
+                pivotGroup.position.z = -posY;
+
+                // Record dynamic trajectory trail
+                addTrailPoint(posX, -posY);
+            }
+
+            // 2. Live 3D Orientation & Attitude Rotation
+            if (roverMesh) {
+                let yDeg = 0.0, pDeg = 0.0, rDeg = 0.0;
+                if (data.pitch_deg !== undefined) pDeg = Number(data.pitch_deg);
+                else if (data.p !== undefined) pDeg = Number(data.p);
+
+                if (data.roll_deg !== undefined) rDeg = Number(data.roll_deg);
+                else if (data.r !== undefined) rDeg = Number(data.r);
+
+                if (data.yaw_deg !== undefined) yDeg = Number(data.yaw_deg);
+                else if (data.hd !== undefined) yDeg = Number(data.hd);
+                else if (data.yaw !== undefined) yDeg = Number(data.yaw) * 180 / Math.PI;
+
+                const q = data.q || data.quaternion;
+                if (q && Array.isArray(q) && q.length >= 4) {
+                    // Strict Onboard IMU 9-DoF Madgwick AHRS Sensor Fusion Projection
+                    // ROS REP-103 body frame to Three.js world frame:
+                    // (qw, qx, qy, qz) -> (qx, -qz, -qy, qw)
+                    roverMesh.quaternion.set(Number(q[1]), -Number(q[3]), -Number(q[2]), Number(q[0])).normalize();
+                } else {
+                    // Mathematical Euler Frame Transformation fallback:
+                    // Clockwise heading rotation around vertical Y axis, pitch around lateral X, roll around Z
+                    roverMesh.rotation.order = 'YXZ';
+                    roverMesh.rotation.y = -yDeg * Math.PI / 180;
+                    roverMesh.rotation.x = pDeg * Math.PI / 180;
+                    roverMesh.rotation.z = -rDeg * Math.PI / 180;
+                }
+
+                // Project Live Rover IMU Coordinates onto HUD
+                if (hudYawEl) {
+                    const dispPitch = -pDeg;
+                    let hudStr = `Y:${yDeg.toFixed(1)}° P:${dispPitch >= 0 ? '+' : ''}${dispPitch.toFixed(1)}° R:${rDeg >= 0 ? '+' : ''}${rDeg.toFixed(1)}°`;
+                    const a = data.a || data.accel;
+                    const g = data.g || data.gyro;
+                    if (a && a.length >= 3) {
+                        hudStr += ` | A:[${Number(a[0]).toFixed(1)},${Number(a[1]).toFixed(1)},${Number(a[2]).toFixed(1)}]`;
+                    }
+                    if (g && g.length >= 3) {
+                        hudStr += ` | G:[${Number(g[0]).toFixed(2)},${Number(g[1]).toFixed(2)},${Number(g[2]).toFixed(2)}]`;
+                    }
+                    hudYawEl.textContent = hudStr;
+                }
+            }
+
+            // 3. Dynamic Obstacle Sensor Visualization Cones
+            if (usCone && usDisc) {
+                const distM = Math.max(0.06, Math.min(3.0, (usMm > 0 ? usMm : 2500) / 1000.0));
+                usCone.scale.set(distM, distM, distM);
+                usDisc.position.z = -0.16 - distM * 0.6;
+                const isWarn = (usMm > 0 && usMm < 350);
+                const isCrit = (usMm > 0 && usMm < 180);
+                const col = isCrit ? 0xef4444 : (isWarn ? 0xf59e0b : 0x38bdf8);
+                usCone.material.color.setHex(col);
+                usDisc.material.color.setHex(col);
+            }
+
+            if (tofLRay) {
+                const distL = Math.max(0.05, Math.min(1.5, (tofLMm > 0 ? tofLMm : 1200) / 1000.0));
+                tofLRay.scale.set(1, 1, distL / 0.5);
+                const isWarn = (tofLMm > 0 && tofLMm < 250);
+                tofLRay.material.color.setHex(isWarn ? 0xef4444 : 0x10b981);
+            }
+
+            if (tofRRay) {
+                const distR = Math.max(0.05, Math.min(1.5, (tofRMm > 0 ? tofRMm : 1200) / 1000.0));
+                tofRRay.scale.set(1, 1, distR / 0.5);
+                const isWarn = (tofRMm > 0 && tofRMm < 250);
+                tofRRay.material.color.setHex(isWarn ? 0xef4444 : 0x10b981);
             }
         };
     </script>

@@ -32,14 +32,16 @@ struct RemoteTelemetry {
   uint8_t ctrlSource = CTRL_JOYSTICK;
   uint8_t airAxis = 0;         // 0=Std(P/R), 1=Swap(R/P), 2=Inv-P, 3=Inv-R, 4=Inv-Both, 5=Swap-Inv
   uint8_t renderMode = 1;      // 1 = CAD 3D Solid (60 FPS fluid), 0 = PBR Digital Twin
+  float ctrlPitchDeg = 0.0f;   // Live handheld controller tilt pitch for Air Drive
+  float ctrlRollDeg = 0.0f;    // Live handheld controller tilt roll for Air Drive
   float inspectYaw = 0.0f;     // 360-degree inspection rotation on Attitude HUD
-  float imuPitchDeg = 0.0f;    // Live handheld IMU pitch angle for dedicated IMU drive
-  float imuRollDeg = 0.0f;     // Live handheld IMU roll angle for dedicated IMU drive
-  float imuYawDeg = 0.0f;      // Live clockwise compass heading (0=N, 90=E, 180=S, 270=W)
+  float imuPitchDeg = 0.0f;    // Rover pitch angle from Rover PKT_TELEM quaternion
+  float imuRollDeg = 0.0f;     // Rover roll angle from Rover PKT_TELEM quaternion
+  float imuYawDeg = 0.0f;      // Rover yaw angle from Rover PKT_TELEM quaternion
 
   // Finer controller tuning parameters
   uint8_t speedLimit = 60;     // 10% to 100%, 5% steps
-  uint8_t autoSpeed = 45;      // 20% to 80%, 5% steps (Auto Navigation speed)
+  uint8_t autoSpeed = 70;      // 40% to 100%, 5% steps (Auto Navigation speed)
   uint8_t deadzonePct = 6;     // 2% to 20%, 2% steps
   uint8_t expoPct = 45;        // 0% (linear) to 90% (high expo), default 45% for smooth low-speed
   int8_t trimFwd = 0;          // -15% to +15%
@@ -68,6 +70,18 @@ struct RemoteTelemetry {
   uint8_t calFlags = 0, magCoverage = 0;
 };
 
+struct SensorDot {
+  float x;
+  float y;
+  uint8_t type; // 0=US, 1=ToF L, 2=ToF R
+  uint8_t age;
+};
+
+struct PathTrailNode {
+  float x;
+  float y;
+};
+
 class DisplayUI {
 public:
   bool inMenu = false;
@@ -92,9 +106,12 @@ private:
   CarRenderer car;
   Quat shown;
   char stripLast[3][24] = {"", "", ""};
-  int16_t trailX[64], trailY[64];
-  uint8_t trailN = 0, trailHead = 0;
-  float lastTrailX = 0, lastTrailY = 0;
+  PathTrailNode pathTrail[48];
+  uint8_t pathTrailN = 0, pathTrailHead = 0;
+  float lastTrailCmX = 0, lastTrailCmY = 0;
+
+  SensorDot sensorDots[48];
+  uint8_t sensorDotCount = 0, sensorDotHead = 0;
 
   void drawHeader(const RemoteTelemetry &tm, const char *title);
   void drawAttitude(const RemoteTelemetry &tm);

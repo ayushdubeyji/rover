@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { margin: 0; background: #060913; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; }
+  #container { width: 960px; height: 540px; position: relative; }
+  .hud-overlay { position: absolute; top: 16px; left: 16px; color: #38bdf8; font-size: 13px; font-weight: 600; text-shadow: 0 2px 4px rgba(0,0,0,0.8); pointer-events: none; }
+  .badge { display: inline-block; padding: 3px 8px; border-radius: 4px; background: rgba(16, 185, 129, 0.2); border: 1px solid #10b981; color: #10b981; margin-right: 8px; }
+  .legend { position: absolute; bottom: 16px; left: 16px; display: flex; gap: 14px; font-size: 11px; color: #94a3b8; }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; }
+</style>
+<script src="js/three.min.js"></script>
+<script src="js/meshopt_decoder.js"></script>
+<script src="js/GLTFLoader.js"></script>
+</head>
+<body>
+<div id="container">
+  <div class="hud-overlay">
+    <div><span class="badge">LIVE 3D SIMULATOR</span> <span>POS: [X: +1.45m, Y: -0.82m] | HDG: 34.5° | SPEED: 70%</span></div>
+    <div style="margin-top: 6px; color: #94a3b8; font-size: 11px;">AHRS 9-DoF Madgwick Fusion | ToF Front-L: 420mm | ToF Front-R: 380mm | US: 290mm</div>
+  </div>
+  <div class="legend">
+    <div class="legend-item"><div class="dot" style="background: #38bdf8;"></div> Trajectory Trail</div>
+    <div class="legend-item"><div class="dot" style="background: #10b981;"></div> Front Heading Vector</div>
+    <div class="legend-item"><div class="dot" style="background: #f59e0b;"></div> Ultrasonic Proximity Cone</div>
+    <div class="legend-item"><div class="dot" style="background: #0284c7;"></div> 0.2m Metric Arena Grid</div>
+  </div>
+</div>
+
+<script>
+window.onload = function() {
+  const container = document.getElementById('container');
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x060913);
+  scene.fog = new THREE.FogExp2(0x060913, 0.04);
+
+  const camera = new THREE.PerspectiveCamera(40, 960 / 540, 0.1, 100);
+  camera.position.set(2.4, 1.7, 2.6);
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+  renderer.setSize(960, 540);
+  renderer.setPixelRatio(1);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  if (THREE.sRGBEncoding) renderer.outputEncoding = THREE.sRGBEncoding;
+  container.appendChild(renderer.domElement);
+
+  // Lighting
+  const ambient = new THREE.AmbientLight(0xffffff, 1.4);
+  scene.add(ambient);
+  const sun = new THREE.DirectionalLight(0xffffff, 2.8);
+  sun.position.set(4, 7, 3.5);
+  sun.castShadow = true;
+  scene.add(sun);
+  const skyFill = new THREE.DirectionalLight(0x38bdf8, 1.2);
+  skyFill.position.set(-4, 3, -3);
+  scene.add(skyFill);
+
+  // Arena Grid
+  const grid = new THREE.GridHelper(16, 80, 0x0284c7, 0x1e293b);
+  scene.add(grid);
+
+  // Ground plane
+  const floorGeo = new THREE.PlaneGeometry(24, 24);
+  const floorMat = new THREE.MeshStandardMaterial({ color: 0x060913, roughness: 0.9, metalness: 0.1 });
+  const floor = new THREE.Mesh(floorGeo, floorMat);
+  floor.rotateX(-Math.PI / 2);
+  floor.receiveShadow = true;
+  scene.add(floor);
+
+  // Origin Ring
+  const originGeo = new THREE.RingGeometry(0.18, 0.22, 32);
+  originGeo.rotateX(-Math.PI / 2);
+  const originMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide, transparent: true, opacity: 0.6 });
+  const originRing = new THREE.Mesh(originGeo, originMat);
+  originRing.position.y = 0.002;
+  scene.add(originRing);
+
+  // Trajectory Motion Trail (Curved S-maneuver into arena)
+  const pts = [];
+  for (let t = 0; t <= 1; t += 0.02) {
+    let px = Math.sin(t * Math.PI * 1.5) * 0.8 + t * 0.6;
+    let pz = -t * 1.6;
+    pts.push(new THREE.Vector3(px, 0.015, pz));
+  }
+  const trailGeo = new THREE.BufferGeometry().setFromPoints(pts);
+  const trailMat = new THREE.LineBasicMaterial({ color: 0x38bdf8, linewidth: 2, transparent: true, opacity: 0.85 });
+  scene.add(new THREE.Line(trailGeo, trailMat));
+
+  // Rover entity rig
+  const pivotGroup = new THREE.Group();
+  const lastPt = pts[pts.length - 1];
+  pivotGroup.position.copy(lastPt);
+  scene.add(pivotGroup);
+
+  const roverMesh = new THREE.Group();
+  roverMesh.rotation.y = -Math.PI * 0.20; // 36 deg heading
+  pivotGroup.add(roverMesh);
+
+  // Heading indicator arrow
+  const dirArrowGeo = new THREE.ConeGeometry(0.08, 0.22, 16);
+  dirArrowGeo.rotateX(Math.PI / 2);
+  const dirArrowMat = new THREE.MeshBasicMaterial({ color: 0x10b981, transparent: true, opacity: 0.85 });
+  const dirArrow = new THREE.Mesh(dirArrowGeo, dirArrowMat);
+  dirArrow.position.set(0, 0.01, -0.28);
+  roverMesh.add(dirArrow);
+
+  // Compass Ring
+  const compRingGeo = new THREE.RingGeometry(0.32, 0.35, 32);
+  compRingGeo.rotateX(-Math.PI / 2);
+  const compRingMat = new THREE.MeshBasicMaterial({ color: 0x0284c7, transparent: true, opacity: 0.45, side: THREE.DoubleSide });
+  const compRing = new THREE.Mesh(compRingGeo, compRingMat);
+  compRing.position.y = 0.008;
+  roverMesh.add(compRing);
+
+  // Ultrasonic Proximity Cone
+  const usConeGeo = new THREE.ConeGeometry(0.18, 0.55, 16, 1, true);
+  usConeGeo.rotateX(-Math.PI / 2);
+  usConeGeo.translate(0, 0, -0.28);
+  const usConeMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.28, wireframe: true });
+  const usCone = new THREE.Mesh(usConeGeo, usConeMat);
+  usCone.position.set(0, 0.12, -0.16);
+  roverMesh.add(usCone);
+
+  // ToF Left and Right Beams
+  const tofGeo = new THREE.CylinderGeometry(0.005, 0.005, 0.45, 8);
+  tofGeo.rotateX(-Math.PI / 2);
+  tofGeo.translate(0, 0, -0.225);
+  const tofMat = new THREE.MeshBasicMaterial({ color: 0x10b981, transparent: true, opacity: 0.8 });
+  const tofL = new THREE.Mesh(tofGeo, tofMat);
+  tofL.position.set(-0.12, 0.10, -0.15);
+  tofL.rotation.y = Math.PI * 0.15;
+  roverMesh.add(tofL);
+
+  const tofR = new THREE.Mesh(tofGeo.clone(), tofMat);
+  tofR.position.set(0.12, 0.10, -0.15);
+  tofR.rotation.y = -Math.PI * 0.15;
+  roverMesh.add(tofR);
+
+  // Focus camera on rover
+  camera.lookAt(pivotGroup.position.x, pivotGroup.position.y + 0.15, pivotGroup.position.z);
+
+  // Load Model
+  const loader = new THREE.GLTFLoader();
+  if (typeof MeshoptDecoder !== 'undefined') loader.setMeshoptDecoder(MeshoptDecoder);
+
+  loader.load('rover_model_optimized.glb', (gltf) => {
+    const model = gltf.scene;
+    const box = new THREE.Box3().setFromObject(model);
+    const center = box.getCenter(new THREE.Vector3());
+    model.position.x = -center.x;
+    model.position.z = -center.z;
+    model.position.y = -box.min.y;
+    model.rotation.y = Math.PI / 2;
+
+    model.traverse((child) => {
+      if (child.isMesh) {
+        child.castShadow = true;
+        child.receiveShadow = true;
+      }
+    });
+    roverMesh.add(model);
+
+    renderer.render(scene, camera);
+
+    setTimeout(() => {
+      renderer.render(scene, camera);
+      renderer.domElement.toBlob(async (blob) => {
+        await fetch('/save_sim', { method: 'POST', body: blob });
+      }, 'image/png');
+    }, 400);
+  });
+};
+</script>
+</body>
+</html>

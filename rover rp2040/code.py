@@ -18,12 +18,14 @@ motors = [
 invert = [1, 1, 1, 1]
 strafe_sign = 1
 rot_sign = 1
-min_duty = 25000
+min_duty = 28500
 accel = 25.0
 spin_ms = 1400
 
 target = [0.0] * 4
 current = [0.0] * 4
+was_stopped = [True] * 4
+stiction_kick = [0] * 4
 last_cmd = time.monotonic()
 macro = []
 macro_end = 0.0
@@ -52,8 +54,19 @@ def drive(i, speed):
     if a < 2.0:
         fwd.duty_cycle = 0
         bck.duty_cycle = 0
+        was_stopped[i] = True
+        stiction_kick[i] = 0
         return
+    if was_stopped[i]:
+        was_stopped[i] = False
+        stiction_kick[i] = 6  # 6 ticks * 10ms = 60ms breakaway kick to break mecanum stiction
     duty = min_duty + int((a - 2.0) / 98.0 * (MAX_DUTY - min_duty))
+    if stiction_kick[i] > 0:
+        stiction_kick[i] -= 1
+        duty = max(duty, 38000)
+    elif a < 16.0:
+        dither = 1200 if (int(time.monotonic() * 100) % 4 < 2) else -1200
+        duty = clamp(duty + dither, min_duty, MAX_DUTY)
     duty = clamp(duty, 0, MAX_DUTY)
     if speed > 0:
         bck.duty_cycle = 0
@@ -69,6 +82,8 @@ def stop_all():
     for i in range(4):
         target[i] = 0.0
         current[i] = 0.0
+        was_stopped[i] = True
+        stiction_kick[i] = 0
         drive(i, 0)
 
 
