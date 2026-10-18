@@ -221,7 +221,7 @@ void DisplayUI::drawMap(const RemoteTelemetry &tm) {
     if (pathTrailN < 48) pathTrailN++;
   }
 
-  // 2. Update Persisted Obstacle Dot Cloud
+  // 2. Update Persisted Obstacle Dot Cloud (with spatial deduplication & age decay)
   float yaw = tm.imuYawDeg * DEG_TO_RAD;
   if (tm.hasTelem && (tm.calFlags & CAL_MAG_OK)) {
     yaw = (float)tm.roverHeading * DEG_TO_RAD;
@@ -239,9 +239,24 @@ void DisplayUI::drawMap(const RemoteTelemetry &tm) {
       float hitAng = yaw + rays[i].relAng;
       float wx = tm.posCm[0] + distCm * cosf(hitAng);
       float wy = tm.posCm[1] + distCm * sinf(hitAng);
-      sensorDots[sensorDotHead] = {wx, wy, rays[i].type, 0};
-      sensorDotHead = (sensorDotHead + 1) % 48;
-      if (sensorDotCount < 48) sensorDotCount++;
+
+      // Check for existing nearby hit to deduplicate (6cm clustering)
+      bool found = false;
+      for (int d = 0; d < (int)sensorDotCount; d++) {
+        float dx = sensorDots[d].x - wx, dy = sensorDots[d].y - wy;
+        if (dx * dx + dy * dy < 36.0f) {
+          sensorDots[d].x = wx;
+          sensorDots[d].y = wy;
+          sensorDots[d].age = 0;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        sensorDots[sensorDotHead] = {wx, wy, rays[i].type, 0};
+        sensorDotHead = (sensorDotHead + 1) % 48;
+        if (sensorDotCount < 48) sensorDotCount++;
+      }
     }
   }
   for (int i = 0; i < (int)sensorDotCount; i++) {
@@ -263,25 +278,15 @@ void DisplayUI::drawMap(const RemoteTelemetry &tm) {
     }
   }
 
-  // 4. Render Persisted World-Frame Sensor Dot Trace Point Cloud
-  for (int i = 0; i < (int)sensorDotCount; i++) {
-    int px = cx - (int)((sensorDots[i].y - tm.posCm[1]) / cmPerPx);
-    int py = cy - (int)((sensorDots[i].x - tm.posCm[0]) / cmPerPx);
-    if (px > 2 && px < CW - 2 && py > 17 && py < CH - 2) {
-      uint16_t col = (sensorDots[i].type == 0) ? C_RED : (sensorDots[i].type == 1 ? C_YELLOW : C_ORANGE);
-      if (sensorDots[i].age > 80) col = 0x6200; // faded older hit
-      canvas->fillRect(px - 1, py - 1, 2, 2, col);
-    }
-  }
-
-  // 5. Render Rover Triangular Heading Glyph
+  // 4. Render Rover Triangular Heading Glyph
   float fx = sinf(yaw), fy = -cosf(yaw); // screen forward vector (0=N/Up, 90=E/Right)
   float lx = -fy, ly = fx;              // screen right vector (perp)
   canvas->fillTriangle(cx + (int)(fx * 9), cy + (int)(fy * 9),
                        cx + (int)(-fx * 6 + lx * 6), cy + (int)(-fy * 6 + ly * 6),
                        cx + (int)(-fx * 6 - lx * 6), cy + (int)(-fy * 6 - ly * 6), C_GREEN);
 
-  // 6. Render Live Sensor Raycasts
+  // 5. Render Live Sensor Raycasts & Obstacle Hit Points
+  uint8_t obsCount = 0;
   for (int i = 0; i < 3; i++) {
     if (!rays[i].mm || rays[i].mm > 1800) continue;
     float d = rays[i].mm / 10.0f / cmPerPx + 8;
@@ -290,12 +295,13 @@ void DisplayUI::drawMap(const RemoteTelemetry &tm) {
     int ox = cx + (int)(dx * d), oy = cy + (int)(dy * d);
     canvas->drawLine(cx + (int)(dx * 9), cy + (int)(dy * 9), ox, oy, 0x4000);
     canvas->fillCircle(ox, oy, 3, i == 0 ? C_RED : (i == 1 ? C_YELLOW : C_ORANGE));
+    obsCount++;
   }
 
-  // 7. Footer Status
+  // 6. Footer Status
   canvas->setTextSize(1); canvas->setTextColor(C_MUTED);
   canvas->setCursor(4, 144);
-  canvas->printf("X:%+.0f Y:%+.0f cm  PTS:%d  TRL:%d", tm.posCm[0], tm.posCm[1], sensorDotCount, pathTrailN);
+  canvas->printf("X:%+.0f Y:%+.0f cm  OBS:%d  TRL:%d", tm.posCm[0], tm.posCm[1], obsCount, pathTrailN);
 }
 
 void DisplayUI::drawSensors(const RemoteTelemetry &tm) {

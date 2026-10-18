@@ -23,6 +23,8 @@ public:
   float yMin = -500, yMax = 500;
   float zMin = -500, zMax = 500;
   bool calMode = false;
+  int16_t lastRx = 0, lastRy = 0, lastRz = 0;
+  uint32_t lastReadMs = 0;
 
   bool begin() {
     // 1. Try QMC5883L (0x0D)
@@ -166,6 +168,26 @@ public:
       rz = (int16_t)(Wire.read() | (Wire.read() << 8));
       return true;
     } else if (chip == MAG_MMC5603) {
+      uint32_t now = millis();
+      // In continuous mode with Auto_SR_en + Cmm_freq_en, check Status (0x18) bit 6 (Meas_M_Done = 0x40)
+      Wire.beginTransmission(0x30);
+      Wire.write(0x18);
+      if (Wire.endTransmission(false) == 0 && Wire.requestFrom((uint8_t)0x30, (uint8_t)1) == 1) {
+        uint8_t st = Wire.read();
+        if (!(st & 0x40)) {
+          // If stuck for > 150ms, re-arm continuous measurement mode
+          if (now - lastReadMs > 150) {
+            writeReg(0x30, 0x1B, 0xA0);
+            writeReg(0x30, 0x1D, 0x10);
+          }
+          // Return cached values if available
+          if (lastRx != 0 || lastRy != 0) {
+            rx = lastRx; ry = lastRy; rz = lastRz;
+            return true;
+          }
+          return false;
+        }
+      }
       Wire.beginTransmission(0x30);
       Wire.write(0x00);
       if (Wire.endTransmission(false) != 0) return false;
@@ -173,11 +195,19 @@ public:
       uint16_t mx_u = ((uint16_t)Wire.read() << 8) | Wire.read();
       uint16_t my_u = ((uint16_t)Wire.read() << 8) | Wire.read();
       uint16_t mz_u = ((uint16_t)Wire.read() << 8) | Wire.read();
-      rx = (int16_t)((int32_t)mx_u - 32768);
-      ry = (int16_t)((int32_t)my_u - 32768);
-      rz = (int16_t)((int32_t)mz_u - 32768);
-      // Also trigger single measurement + Auto_SR in case continuous mode was interrupted
-      writeReg(0x30, 0x1B, 0x21);
+      int16_t curX = (int16_t)((int32_t)mx_u - 32768);
+      int16_t curY = (int16_t)((int32_t)my_u - 32768);
+      int16_t curZ = (int16_t)((int32_t)mz_u - 32768);
+      if (lastRx == 0 && lastRy == 0 && lastRz == 0) {
+        lastRx = curX; lastRy = curY; lastRz = curZ;
+      } else {
+        // Low-pass filter (EMA 0.65 current, 0.35 previous) to eliminate ADC quantization jitter
+        lastRx = (int16_t)(lastRx * 0.35f + curX * 0.65f);
+        lastRy = (int16_t)(lastRy * 0.35f + curY * 0.65f);
+        lastRz = (int16_t)(lastRz * 0.35f + curZ * 0.65f);
+      }
+      rx = lastRx; ry = lastRy; rz = lastRz;
+      lastReadMs = now;
       return true;
     }
     return false;

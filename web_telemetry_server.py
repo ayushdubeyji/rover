@@ -276,7 +276,7 @@ def update_sensory_memory(rx_m: float, ry_m: float, hd_deg: float, us_mm: int, t
 
     # 2. Decay polar histogram
     for i in range(12):
-        polar_hist[i] *= 0.985
+        polar_hist[i] *= 0.96
 
     # 3. Project physical + visual camera hits into world coordinates
     hd_rad = math.radians(hd_deg)
@@ -304,7 +304,9 @@ def update_sensory_memory(rx_m: float, ry_m: float, hd_deg: float, us_mm: int, t
 
             found = False
             for dot in obstacle_memory:
-                if math.hypot(dot[0] - ox, dot[1] - oy) < 0.06:
+                if math.hypot(dot[0] - ox, dot[1] - oy) < 0.08:
+                    dot[0] = ox
+                    dot[1] = oy
                     dot[2] = now
                     found = True
                     break
@@ -316,7 +318,7 @@ def update_sensory_memory(rx_m: float, ry_m: float, hd_deg: float, us_mm: int, t
             cost_inc = (1.5 - d_m) / 0.5
             polar_hist[sector] = min(10.0, polar_hist[sector] + cost_inc)
 
-    obstacle_memory = [dot for dot in obstacle_memory if (now - dot[2]) < 45.0][-96:]
+    obstacle_memory = [dot for dot in obstacle_memory if (now - dot[2]) < 1.5][-8:]
 
     # 4. Raycast Virtual ToF distances from spatial memory
     virt_f_m = 2.0
@@ -377,10 +379,11 @@ async def ros2_autonomy_computation_loop():
 
                 is_boxed_in = (d_f < 250) or (d_l < 250 and d_r < 250) or (d_f < 350 and (d_l < 300 or d_r < 300))
 
-                vx = 0.0
-                vy = 0.0
-                vz = 0.0
-                spd = 70
+                base_spd = int(latest_telemetry.get('speed', 60))
+                if base_spd <= 0:
+                    base_spd = 60
+                base_spd = max(30, min(100, base_spd))
+                spd = base_spd
 
                 if auto_state == "FORWARD":
                     if is_boxed_in:
@@ -405,12 +408,12 @@ async def ros2_autonomy_computation_loop():
                         vx = 0.80 + 0.20 * fwd_norm
                         turn_bias = (d_l - d_r) / 500.0
                         vz = max(-0.7, min(0.7, turn_bias))
-                        spd = int(68 + 12 * fwd_norm)
+                        spd = int(base_spd * (0.80 + 0.20 * fwd_norm))
 
                 elif auto_state == "REVERSE_OUT":
                     vx = -0.65
                     vz = 0.0
-                    spd = 72
+                    spd = max(35, min(100, int(base_spd * 1.05)))
                     if now - auto_state_start_t > 0.75:
                         auto_state = "PIVOT_OUT"
                         auto_state_start_t = now
@@ -421,7 +424,7 @@ async def ros2_autonomy_computation_loop():
                         auto_state = "FORWARD"
                     else:
                         vz = 0.85 * auto_escape_dir
-                        spd = 70
+                        spd = max(35, min(100, base_spd))
 
                 send_rover_drive_packet(vx=vx, vy=vy, vz=vz, speed=spd, mode=9)
 

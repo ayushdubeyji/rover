@@ -195,7 +195,7 @@ void onEspNowRecv(const uint8_t* mac, const uint8_t* data, int len) {
     haptics.play(FX_ALERT);
   }
   if (telemetry.calFlags & CAL_MAG_OK) {
-    telemetry.roverHeading = p->arg;
+    telemetry.roverHeading = (int16_t)(((p->arg % 360) + 360) % 360);
   }
 }
 
@@ -206,7 +206,8 @@ void sendPacket(uint8_t type, int8_t x, int8_t y, int8_t z, int16_t arg, uint8_t
   pkt.x = x;
   pkt.y = y;
   pkt.z = z;
-  pkt.speed = (flags & FLAG_TURBO) ? 100 : ((telemetry.semiAuto || telemetry.roverMode == MODE_AUTO) ? telemetry.autoSpeed : telemetry.speedLimit);
+  uint8_t effAutoSpd = min(telemetry.autoSpeed, telemetry.speedLimit);
+  pkt.speed = (flags & FLAG_TURBO) ? 100 : ((telemetry.semiAuto || telemetry.roverMode == MODE_AUTO) ? effAutoSpd : telemetry.speedLimit);
   if (telemetry.semiAuto) telemetry.roverMode = MODE_AUTO;
   pkt.mode = telemetry.roverMode;
   uint8_t sysFlags = (telemetry.semiAuto || telemetry.roverMode == MODE_AUTO ? FLAG_AUTO : 0) |
@@ -266,8 +267,8 @@ float applyExpo(float val, float expo) {
 void loadPreferences() {
   if (prefs.begin("s3remote", true)) {
     telemetry.speedLimit = prefs.getUChar("spd", 60);
-    telemetry.autoSpeed = prefs.getUChar("aspd", 70);
-    if (telemetry.autoSpeed < 55) telemetry.autoSpeed = 70;
+    telemetry.autoSpeed = prefs.getUChar("aspd", 60);
+    if (telemetry.autoSpeed < 30) telemetry.autoSpeed = 60;
     telemetry.deadzonePct = prefs.getUChar("dead", 6);
     telemetry.expoPct = prefs.getUChar("expo", 45);
     telemetry.airAxis = prefs.getUChar("aax", 0);

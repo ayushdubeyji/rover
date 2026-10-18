@@ -337,10 +337,17 @@ void updateSensoryFusion() {
       float hx = odomX + hitDistCm * cosf(rad);
       float hy = odomY + hitDistCm * sinf(rad);
 
-      dotX[dotHead] = hx;
-      dotY[dotHead] = hy;
-      dotHead = (dotHead + 1) % 48;
-      if (dotCount < 48) dotCount++;
+      bool dup = false;
+      for (uint8_t d = 0; d < dotCount; d++) {
+        float dx = dotX[d] - hx, dy = dotY[d] - hy;
+        if (dx * dx + dy * dy < 64.0f) { dup = true; break; }
+      }
+      if (!dup) {
+        dotX[dotHead] = hx;
+        dotY[dotHead] = hy;
+        dotHead = (dotHead + 1) % 48;
+        if (dotCount < 48) dotCount++;
+      }
 
       // Compass sector (30 deg per sector, -180 to +180)
       float hitAng = atan2f(hy - odomY, hx - odomX) * RAD_TO_DEG;
@@ -353,8 +360,8 @@ void updateSensoryFusion() {
 }
 
 void runAutonomousTank(float &x, float &y, float &z, int &spd, float &amax, float &jmax) {
-  // High-torque breakaway floor: eliminate mecanum static stiction
-  spd = constrain(max(spd, 70), 55, 100);
+  // Respect user-configured speed limit from settings (supports low-speed autonomous crawl down to 30%)
+  spd = constrain(spd, 30, 100);
   amax = 3.2f;
   jmax = 20.0f;
 
@@ -467,7 +474,7 @@ void runAutonomousTank(float &x, float &y, float &z, int &spd, float &amax, floa
       // Phase 1: Drive backward along breadcrumb vector with boosted torque
       y = -0.82f;
       z = -0.25f * autoEscapeDir;
-      spd = min(100, spd + 18);
+      spd = min(100, (int)lroundf(spd * 1.10f));
       bool clearanceOpen = (now - autoStateStart >= 600) && (dF > 420 && dL > 340 && dR > 340);
       if (now >= autoStateUntil || clearanceOpen) {
         autoState = AUTO_STATE_PIVOT_OUT;
@@ -482,7 +489,7 @@ void runAutonomousTank(float &x, float &y, float &z, int &spd, float &amax, floa
       // Phase 2: Compass-Locked Wide Pivot toward lowest-cost open sector
       y = 0.0f;
       z = 0.88f * autoEscapeDir;
-      spd = min(100, spd + 10);
+      spd = min(100, (int)lroundf(spd * 1.05f));
       float hErr = wrapDeg(autoTargetHeading - heading);
       if (fabsf(hErr) < 12.0f || now >= autoStateUntil) {
         autoState = AUTO_STATE_FORWARD;
@@ -681,24 +688,36 @@ void controlTick() {
       fusion.updateMagCoverage();
       float spanX = fusion.magMax[0] - fusion.magMin[0];
       float spanY = fusion.magMax[1] - fusion.magMin[1];
-      float wx = constrain((spanX - 80.0f) / 140.0f, 0.0f, 1.0f);
-      float wy = constrain((spanY - 80.0f) / 140.0f, 0.0f, 1.0f);
-      float offX = (1.0f - wx) * (-76.0f) + wx * 0.5f * (fusion.magMax[0] + fusion.magMin[0]);
-      float offY = (1.0f - wy) * (-123.0f) + wy * 0.5f * (fusion.magMax[1] + fusion.magMin[1]);
+      float offX = 0.0f, offY = 0.0f;
+      if (spanX > 40.0f && spanY > 40.0f) {
+        offX = 0.5f * (fusion.magMax[0] + fusion.magMin[0]);
+        offY = 0.5f * (fusion.magMax[1] + fusion.magMin[1]);
+        fusion.magCal = true;
+      } else {
+        fusion.magCal = false;
+        offX = -76.0f;
+        offY = -123.0f;
+      }
       float cx = lastMag[0] - offX;
       float cy = lastMag[1] - offY;
-      float magHdg = atan2f(-cy, cx) * RAD_TO_DEG - fusion.yawZero;
-      while (magHdg > 180.0f) magHdg -= 360.0f;
-      while (magHdg < -180.0f) magHdg += 360.0f;
-      heading = magHdg;
+      if (cx * cx + cy * cy >= 64.0f) {
+        float magHdg = atan2f(-cy, cx) * RAD_TO_DEG - fusion.yawZero;
+        while (magHdg > 180.0f) magHdg -= 360.0f;
+        while (magHdg < -180.0f) magHdg += 360.0f;
+        float diff = magHdg - heading;
+        while (diff > 180.0f) diff -= 360.0f;
+        while (diff < -180.0f) diff += 360.0f;
+        heading += diff * 0.25f;
+        while (heading > 180.0f) heading -= 360.0f;
+        while (heading < -180.0f) heading += 360.0f;
+      }
       roll = 0.0f;
       pitch = 0.0f;
-      float zRad = -heading * DEG_TO_RAD * 0.5f;
+      float zRad = heading * DEG_TO_RAD * 0.5f;
       fusion.q0 = cosf(zRad);
       fusion.q1 = 0.0f;
       fusion.q2 = 0.0f;
       fusion.q3 = sinf(zRad);
-      fusion.magCal = true;
     }
   } else {
     fusion.gyroCal = false;
@@ -707,7 +726,7 @@ void controlTick() {
     while (heading < -180.0f) heading += 360.0f;
     roll = 0.0f;
     pitch = 0.0f;
-    float zRad = -heading * DEG_TO_RAD * 0.5f;
+    float zRad = heading * DEG_TO_RAD * 0.5f;
     fusion.q0 = cosf(zRad);
     fusion.q1 = 0.0f;
     fusion.q2 = 0.0f;
@@ -912,7 +931,7 @@ void handlePacket() {
   ack.flags = (mode == MODE_AUTO ? FLAG_AUTO : 0) | (crashProt ? 0 : FLAG_CRASH_OFF) |
               (millis() < impactUntil ? FLAG_IMPACT : 0);
   ack.seq = p.seq;
-  ack.arg = magReady ? (int16_t)lroundf(targetHeading) : (int16_t)lroundf(heading);
+  ack.arg = (int16_t)lroundf(fmodf(heading + 3600.0f, 360.0f));
   esp_now_send(mac, (uint8_t*)&ack, sizeof(ack));
 }
 
