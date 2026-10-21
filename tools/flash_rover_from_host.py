@@ -213,6 +213,7 @@ telemetry_paused = False
 try:
     print("Connecting to host server via SFTP...")
     ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
         if os.path.exists(KEY_PATH):
             ssh.connect(HOST, username=USER, key_filename=KEY_PATH, timeout=10)
@@ -243,8 +244,8 @@ try:
     sftp.close()
     print("Uploaded binary successfully!")
 
-    print("Pausing web_telemetry_server during OTA to guarantee 100% WiFi quietness...")
-    ssh.exec_command("pkill -f web_telemetry_server.py")
+    print("Pausing rover-telemetry during OTA to guarantee 100% WiFi quietness...")
+    ssh.exec_command("sudo systemctl stop rover-telemetry.service 2>/dev/null || pkill -f web_telemetry_server.py")
     telemetry_paused = True
     time.sleep(1)
 
@@ -270,8 +271,8 @@ try:
 finally:
     if ssh:
         if telemetry_paused:
-            print("Restarting web_telemetry_server on host...")
-            ssh.exec_command("nohup bash /home/ayush/mecanum_robot/run_telemetry.sh > /home/ayush/mecanum_robot/telemetry_server.log 2>&1 &")
+            print("Restarting rover-telemetry service on host...")
+            ssh.exec_command("sudo systemctl start rover-telemetry.service 2>/dev/null || (nohup bash /home/ayush/mecanum_robot/run_telemetry.sh > /home/ayush/mecanum_robot/telemetry_server.log 2>&1 &)")
             time.sleep(1)
         ssh.close()
     if ser:

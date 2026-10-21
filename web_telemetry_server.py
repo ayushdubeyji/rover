@@ -136,7 +136,7 @@ latest_telemetry: Dict[str, Any] = {
     "speed": 50,
     "pi_cam": {
         "cam_online": False,
-        "stream_url": "http://192.168.0.108:8081/stream",
+        "stream_url": "http://192.168.0.103:8081/stream",
         "vis_f_mm": 2000,
         "vis_l_mm": 2000,
         "vis_r_mm": 2000,

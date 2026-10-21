@@ -87,7 +87,7 @@ class TofLaserScanPublisher(Node):
             self.sock.setblocking(False)
             self.get_logger().info(f"Listening for rover telemetry UDP on port {self.port}")
         except Exception as e:
-            self.get_logger().warn(f"UDP bind on {self.port} skipped ({e}); using ROS topics.")
+            self.get_logger().warning(f"UDP bind on {self.port} skipped ({e}); using ROS topics.")
 
         # Periodic timer for publishing LaserScan and Range
         dt = 1.0 / self.rate_hz

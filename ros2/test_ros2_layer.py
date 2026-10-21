@@ -237,17 +237,29 @@ def test_ld2402_radar_protocol():
 
     # 4. Stream corruption resilience & recovery
     from ros2_rover.ld2402_radar_node import LD2402RadarNode
-    node = LD2402RadarNode()
-    corrupted_stream = (
-        b'\xaa\xbb\xcc' +                    # leading line noise
-        b'\xf4\xf3\xf2\xf1\x10\x00' +        # false header with wrong length
-        b'\x00' * 16 +                       # garbage bytes
-        eng_frame                            # valid 141-byte frame
-    )
-    parsed_frames = node.process_incoming_bytes(corrupted_stream)
-    assert len(parsed_frames) == 1, f"Expected 1 parsed frame despite stream noise, got {len(parsed_frames)}"
-    assert parsed_frames[0]['distance_m'] == 1.85
-    assert len(node.rx_buffer) == 0, f"Expected clean rx_buffer after parsing, got {len(node.rx_buffer)}"
+    import rclpy
+    need_shutdown = False
+    if not rclpy.ok():
+        rclpy.init()
+        need_shutdown = True
+    node = None
+    try:
+        node = LD2402RadarNode()
+        corrupted_stream = (
+            b'\xaa\xbb\xcc' +                    # leading line noise
+            b'\xf4\xf3\xf2\xf1\x10\x00' +        # false header with wrong length
+            b'\x00' * 16 +                       # garbage bytes
+            eng_frame                            # valid 141-byte frame
+        )
+        parsed_frames = node.process_incoming_bytes(corrupted_stream)
+        assert len(parsed_frames) == 1, f"Expected 1 parsed frame despite stream noise, got {len(parsed_frames)}"
+        assert parsed_frames[0]['distance_m'] == 1.85
+        assert len(node.rx_buffer) == 0, f"Expected clean rx_buffer after parsing, got {len(node.rx_buffer)}"
+    finally:
+        if node is not None:
+            node.destroy_node()
+        if need_shutdown and rclpy.ok():
+            rclpy.shutdown()
 
 
 def test_voice_follower_fsm_and_ego_noise_gating():

@@ -63,7 +63,8 @@ sudo apt-get install -y \
     "ros-${ROS_DISTRO}-robot-state-publisher" \
     "ros-${ROS_DISTRO}-xacro" \
     "ros-${ROS_DISTRO}-tf2-ros" \
-    python3-colcon-common-extensions python3-rosdep
+    python3-colcon-common-extensions python3-rosdep \
+    python3-scipy python3-numpy python3-serial
 
 echo "=== [6/8] Installing Arduino CLI & ESP32 Core ==="
 if ! command -v arduino-cli &> /dev/null; then

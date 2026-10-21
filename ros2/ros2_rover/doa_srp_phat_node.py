@@ -312,7 +312,7 @@ class DoASrpPhatNode(Node):
                             biases[k] = float(delays[k])
                 self.get_logger().info(f"Loaded inter-mic calibration biases: {biases}")
             except Exception as e:
-                self.get_logger().warn(f"Failed to read calibration file: {e}")
+                self.get_logger().warning(f"Failed to read calibration file: {e}")
         return biases
 
     def process_audio_buffer(self, audio_3ch: np.ndarray) -> Tuple[float, float, bool]:

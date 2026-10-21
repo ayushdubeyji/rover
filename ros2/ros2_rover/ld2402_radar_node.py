@@ -281,7 +281,7 @@ class LD2402RadarNode(Node):
             if self.engineering_mode:
                 self.configure_sensor(enable_engineering=True)
         except Exception as e:
-            self.get_logger().warn(f"Could not open serial port {self.port_name}: {e}. Running mock/sim mode.")
+            self.get_logger().warning(f"Could not open serial port {self.port_name}: {e}. Running mock/sim mode.")
             self.serial_conn = None
 
     def configure_sensor(self, enable_engineering: bool = True):
