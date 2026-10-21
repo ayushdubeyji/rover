@@ -1,10 +1,24 @@
+import os
 import sys
 import paramiko
 
 def run(cmd):
     c = paramiko.SSHClient()
     c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    c.connect('192.168.0.111', username='ayush', password='REMOVED', timeout=10)
+    host = '192.168.0.111'
+    user = 'ayush'
+    pw = os.environ.get('SSH_PASSWORD')
+    key_path = os.path.expanduser('~/.ssh/id_ed25519')
+    try:
+        if os.path.exists(key_path):
+            c.connect(host, username=user, key_filename=key_path, timeout=10)
+        else:
+            c.connect(host, username=user, password=pw, timeout=10)
+    except Exception:
+        if pw:
+            c.connect(host, username=user, password=pw, timeout=10)
+        else:
+            raise
     stdin, stdout, stderr = c.exec_command(cmd, timeout=30)
     out = stdout.read().decode('utf-8', errors='replace')
     err = stderr.read().decode('utf-8', errors='replace')

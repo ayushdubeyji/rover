@@ -2,7 +2,7 @@ import paramiko
 
 host = '192.168.0.111'
 user = 'ayush'
-pw = 'REMOVED'
+pw = os.environ.get('SSH_PASSWORD')
 html_path = '/home/ayush/mecanum_robot/mecanum_host_ws/src/mecanum_robot/web/static/index.html'
 
 c = paramiko.SSHClient()

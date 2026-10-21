@@ -3,7 +3,7 @@ import time
 
 c = paramiko.SSHClient()
 c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-c.connect('192.168.0.111', username='ayush', password='REMOVED', timeout=10)
+c.connect('192.168.0.111', username='ayush', key_filename=os.path.expanduser('~/.ssh/id_ed25519') if os.path.exists(os.path.expanduser('~/.ssh/id_ed25519')) else None, password=os.environ.get('SSH_PASSWORD'), timeout=10)
 
 c.exec_command("pkill -9 -f 'web_telemetry_server.py'")
 time.sleep(1)

@@ -1,0 +1,241 @@
+<?xml version="1.0"?>
+<robot name="mecanum_rover" xmlns:xacro="http://ros.org/wiki/xacro">
+
+  <!-- Dimensions (in meters) -->
+  <xacro:property name="wheel_radius" value="0.040" />
+  <xacro:property name="wheel_width"  value="0.038" />
+  <xacro:property name="wheelbase"    value="0.180" />
+  <xacro:property name="track_width"  value="0.160" />
+  <xacro:property name="chassis_len"  value="0.220" />
+  <xacro:property name="chassis_wid"  value="0.140" />
+  <xacro:property name="chassis_hgt"  value="0.055" />
+
+  <!-- Exact Sensor Geometry Specifications -->
+  <!-- Camera: 11 cm from centre at front (0 deg) -->
+  <xacro:property name="cam_dist"     value="0.110" />
+  <!-- ToF: 10 cm from centre, rotated ~33 deg left/right -->
+  <xacro:property name="tof_dist"     value="0.100" />
+  <xacro:property name="tof_yaw_rad"  value="0.57595865" /> <!-- 33.0 degrees -->
+  <xacro:property name="tof_x"        value="${tof_dist * cos(tof_yaw_rad)}" />  <!-- 0.083867m -->
+  <xacro:property name="tof_y"        value="${tof_dist * sin(tof_yaw_rad)}" />  <!-- 0.054464m -->
+
+  <!-- Materials -->
+  <material name="chassis_dark">
+    <color rgba="0.12 0.12 0.15 1.0"/>
+  </material>
+  <material name="accent_cyan">
+    <color rgba="0.0 0.85 0.75 1.0"/>
+  </material>
+  <material name="sensor_amber">
+    <color rgba="0.95 0.65 0.15 1.0"/>
+  </material>
+  <material name="wheel_rubber">
+    <color rgba="0.22 0.22 0.25 1.0"/>
+  </material>
+  <material name="camera_blue">
+    <color rgba="0.20 0.60 0.95 1.0"/>
+  </material>
+
+  <!-- base_footprint (Ground projection) -->
+  <link name="base_footprint"/>
+
+  <joint name="base_footprint_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 ${wheel_radius}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- base_link (Chassis body origin) -->
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 ${chassis_hgt/2}" rpy="0 0 0"/>
+      <geometry>
+        <box size="${chassis_len} ${chassis_wid} ${chassis_hgt}"/>
+      </geometry>
+      <material name="chassis_dark"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 ${chassis_hgt/2}" rpy="0 0 0"/>
+      <geometry>
+        <box size="${chassis_len} ${chassis_wid} ${chassis_hgt}"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 ${chassis_hgt/2}" rpy="0 0 0"/>
+      <mass value="2.10"/> <!-- +40% mass ballast -->
+      <inertia ixx="0.0062" ixy="0.0" ixz="0.0" iyy="0.0105" iyz="0.0" izz="0.0152"/>
+    </inertial>
+  </link>
+
+  <!-- IMU Link (REP-103: X forward, Y left, Z up) -->
+  <link name="imu_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.02 0.02 0.005"/>
+      </geometry>
+      <material name="sensor_amber"/>
+    </visual>
+  </link>
+  <joint name="imu_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="imu_link"/>
+    <origin xyz="0.0 0.0 ${chassis_hgt + 0.008}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Front Camera Link (11cm from centre at front 0 deg) -->
+  <link name="camera_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.025 0.025 0.015"/>
+      </geometry>
+      <material name="camera_blue"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.025 0.025 0.015"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="camera_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_link"/>
+    <origin xyz="${cam_dist} 0.0 ${chassis_hgt + 0.025}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Camera Optical Frame (REP-103: Z forward, X right, Y down) -->
+  <link name="camera_optical_frame"/>
+  <joint name="camera_optical_joint" type="fixed">
+    <parent link="camera_link"/>
+    <child link="camera_optical_frame"/>
+    <origin xyz="0 0 0" rpy="-1.5707963 0 -1.5707963"/>
+  </joint>
+
+  <!-- Front Ultrasonic Sensor Link (11cm from centre at front 0 deg) -->
+  <link name="ultrasonic_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.020 0.045 0.020"/>
+      </geometry>
+      <material name="sensor_amber"/>
+    </visual>
+  </link>
+  <joint name="ultrasonic_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="ultrasonic_link"/>
+    <origin xyz="${cam_dist} 0.0 ${chassis_hgt * 0.40}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Front-Left ToF Sensor Link (10cm from centre, +33 deg yaw about Z) -->
+  <link name="tof_left_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.012 0.020 0.008"/>
+      </geometry>
+      <material name="accent_cyan"/>
+    </visual>
+  </link>
+  <joint name="tof_left_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="tof_left_link"/>
+    <origin xyz="${tof_x} ${tof_y} ${chassis_hgt * 0.40}" rpy="0 0 ${tof_yaw_rad}"/>
+  </joint>
+
+  <!-- Front-Right ToF Sensor Link (10cm from centre, -33 deg yaw about Z) -->
+  <link name="tof_right_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.012 0.020 0.008"/>
+      </geometry>
+      <material name="accent_cyan"/>
+    </visual>
+  </link>
+  <joint name="tof_right_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="tof_right_link"/>
+    <origin xyz="${tof_x} -${tof_y} ${chassis_hgt * 0.40}" rpy="0 0 -${tof_yaw_rad}"/>
+  </joint>
+
+  <!-- Virtual 2D LaserScan frame for Nav2 obstacle projection -->
+  <link name="scan"/>
+  <joint name="scan_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="scan"/>
+    <origin xyz="0.0 0.0 ${chassis_hgt * 0.40}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- 3-Microphone Array Link (Center mast top, z=0.16m) -->
+  <link name="mic_array_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.035" length="0.005"/>
+      </geometry>
+      <material name="accent_cyan"/>
+    </visual>
+  </link>
+  <joint name="mic_array_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="mic_array_link"/>
+    <origin xyz="0.0 0.0 0.16" rpy="0 0 0"/>
+  </joint>
+
+  <!-- HLK-LD2402 24GHz Radar Link (Front bumper center, x=+0.11m, z=0.06m) -->
+  <link name="ld2402_radar_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.010 0.020 0.020"/>
+      </geometry>
+      <material name="sensor_amber"/>
+    </visual>
+  </link>
+  <joint name="ld2402_radar_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="ld2402_radar_link"/>
+    <origin xyz="0.11 0.0 0.06" rpy="0 0 0"/>
+  </joint>
+
+
+  <!-- Mecanum Wheel Macro -->
+  <xacro:macro name="mecanum_wheel" params="prefix x_reflect y_reflect">
+    <link name="wheel_${prefix}_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+        </geometry>
+        <material name="wheel_rubber"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <mass value="0.14"/>
+        <inertia ixx="0.00007" ixy="0" ixz="0" iyy="0.00007" iyz="0" izz="0.00011"/>
+      </inertial>
+    </link>
+
+    <joint name="wheel_${prefix}_joint" type="continuous">
+      <parent link="base_link"/>
+      <child link="wheel_${prefix}_link"/>
+      <origin xyz="${x_reflect * wheelbase / 2} ${y_reflect * track_width / 2} 0" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+    </joint>
+  </xacro:macro>
+
+  <xacro:mecanum_wheel prefix="fl" x_reflect="1"  y_reflect="1"  />
+  <xacro:mecanum_wheel prefix="fr" x_reflect="1"  y_reflect="-1" />
+  <xacro:mecanum_wheel prefix="rl" x_reflect="-1" y_reflect="1"  />
+  <xacro:mecanum_wheel prefix="rr" x_reflect="-1" y_reflect="-1" />
+
+</robot>

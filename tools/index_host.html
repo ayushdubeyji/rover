@@ -1123,20 +1123,20 @@
             usDisc.position.set(0, 0.12, -0.6);
             roverMesh.add(usDisc);
 
-            // 2. Dual ToF Beams (Left & Right, angled at 25°)
+            // 2. Dual ToF Beams (Left & Right, angled at ±33°, 10 cm from centre)
             const tofGeo = new THREE.CylinderGeometry(0.004, 0.004, 0.5, 8);
             tofGeo.rotateX(-Math.PI / 2);
             tofGeo.translate(0, 0, -0.25);
             const tofMatL = new THREE.MeshBasicMaterial({ color: 0x10b981, transparent: true, opacity: 0.6 });
             tofLRay = new THREE.Mesh(tofGeo, tofMatL);
-            tofLRay.position.set(-0.12, 0.10, -0.15);
-            tofLRay.rotation.y = Math.PI * 0.15; // 27 deg left
+            tofLRay.position.set(-0.0545, 0.10, -0.0839);
+            tofLRay.rotation.y = 0.57596; // +33 deg left
             roverMesh.add(tofLRay);
 
             const tofMatR = new THREE.MeshBasicMaterial({ color: 0x10b981, transparent: true, opacity: 0.6 });
             tofRRay = new THREE.Mesh(tofGeo.clone(), tofMatR);
-            tofRRay.position.set(0.12, 0.10, -0.15);
-            tofRRay.rotation.y = -Math.PI * 0.15; // 27 deg right
+            tofRRay.position.set(0.0545, 0.10, -0.0839);
+            tofRRay.rotation.y = -0.57596; // -33 deg right
             roverMesh.add(tofRRay);
 
             // --- Load User's Authentic PBR 3D Rover Model ---

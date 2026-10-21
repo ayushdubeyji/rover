@@ -121,22 +121,22 @@ window.onload = function() {
   usConeGeo.translate(0, 0, -0.28);
   const usConeMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.28, wireframe: true });
   const usCone = new THREE.Mesh(usConeGeo, usConeMat);
-  usCone.position.set(0, 0.12, -0.16);
+  usCone.position.set(0, 0.12, -0.11);
   roverMesh.add(usCone);
 
-  // ToF Left and Right Beams
+  // ToF Left and Right Beams (±33°, 10 cm from centre)
   const tofGeo = new THREE.CylinderGeometry(0.005, 0.005, 0.45, 8);
   tofGeo.rotateX(-Math.PI / 2);
   tofGeo.translate(0, 0, -0.225);
   const tofMat = new THREE.MeshBasicMaterial({ color: 0x10b981, transparent: true, opacity: 0.8 });
   const tofL = new THREE.Mesh(tofGeo, tofMat);
-  tofL.position.set(-0.12, 0.10, -0.15);
-  tofL.rotation.y = Math.PI * 0.15;
+  tofL.position.set(-0.0545, 0.10, -0.0839);
+  tofL.rotation.y = 0.57596;
   roverMesh.add(tofL);
 
   const tofR = new THREE.Mesh(tofGeo.clone(), tofMat);
-  tofR.position.set(0.12, 0.10, -0.15);
-  tofR.rotation.y = -Math.PI * 0.15;
+  tofR.position.set(0.0545, 0.10, -0.0839);
+  tofR.rotation.y = -0.57596;
   roverMesh.add(tofR);
 
   // Focus camera on rover

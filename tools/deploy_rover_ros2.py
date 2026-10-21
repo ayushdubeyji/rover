@@ -7,7 +7,7 @@ import paramiko
 
 HOST = '192.168.0.111'
 USER = 'ayush'
-PASS = 'REMOVED'
+PASS = os.environ.get('SSH_PASSWORD')
 REMOTE_WS = '/home/ayush/mecanum_robot/mecanum_host_ws/src/rover_localization'
 
 PACKAGE_XML = '''<?xml version="1.0"?>
@@ -276,27 +276,41 @@ URDF_XACRO = '''<?xml version="1.0"?>
     <origin xyz="0.04 0.0 ${chassis_hgt + 0.025}" rpy="0 0 0"/>
   </joint>
 
-  <!-- Ultrasonic Sensor Link (Front center) -->
+  <!-- Front Camera Link (11cm from centre at front 0 deg) -->
+  <link name="camera_link"/>
+  <joint name="camera_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_link"/>
+    <origin xyz="0.110 0.0 ${chassis_hgt + 0.025}" rpy="0 0 0"/>
+  </joint>
+  <link name="camera_optical_frame"/>
+  <joint name="camera_optical_joint" type="fixed">
+    <parent link="camera_link"/>
+    <child link="camera_optical_frame"/>
+    <origin xyz="0 0 0" rpy="-1.5707963 0 -1.5707963"/>
+  </joint>
+
+  <!-- Ultrasonic Sensor Link (Front center 11cm) -->
   <link name="ultrasonic_link"/>
   <joint name="ultrasonic_joint" type="fixed">
     <parent link="base_link"/>
     <child link="ultrasonic_link"/>
-    <origin xyz="${chassis_len/2 + 0.01} 0.0 ${chassis_hgt*0.6}" rpy="0 0 0"/>
+    <origin xyz="0.110 0.0 ${chassis_hgt*0.6}" rpy="0 0 0"/>
   </joint>
 
-  <!-- Dual ToF Sensor Links (Front left & Front right) -->
+  <!-- Dual ToF Sensor Links (10cm from centre, ~33 deg left/right) -->
   <link name="tof_left_link"/>
   <joint name="tof_left_joint" type="fixed">
     <parent link="base_link"/>
     <child link="tof_left_link"/>
-    <origin xyz="${chassis_len/2 + 0.005} 0.045 ${chassis_hgt*0.35}" rpy="0 0 0.1745"/>
+    <origin xyz="0.083867 0.054464 ${chassis_hgt*0.35}" rpy="0 0 0.57595865"/>
   </joint>
 
   <link name="tof_right_link"/>
   <joint name="tof_right_joint" type="fixed">
     <parent link="base_link"/>
     <child link="tof_right_link"/>
-    <origin xyz="${chassis_len/2 + 0.005} -0.045 ${chassis_hgt*0.35}" rpy="0 0 -0.1745"/>
+    <origin xyz="0.083867 -0.054464 ${chassis_hgt*0.35}" rpy="0 0 -0.57595865"/>
   </joint>
 
   <!-- Wheel macro -->

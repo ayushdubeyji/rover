@@ -299,8 +299,18 @@
                 <button class="btn-mode" data-mode="9" onclick="setMode(9)" style="border-color: #f59e0b; color: #f59e0b;">9. Full Auto (VFH+)</button>
             </div>
             <div style="margin-top: 8px; display: flex; justify-content: space-between; align-items: center;">
-                <span style="font-size: 0.78rem; color: #94a3b8;">Crash Protection (±32° ToF + 0° US)</span>
+                <span style="font-size: 0.78rem; color: #94a3b8;">Crash Protection (±33° ToF + 0° US)</span>
                 <button id="btn-crash-prot" onclick="toggleCrashProt()" style="background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid #10b981; padding: 4px 10px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; cursor: pointer;">ON (ALL MODES)</button>
+            </div>
+
+            <!-- Autonomous Navigation Engine State Status -->
+            <div id="autonav-status-card" style="margin-top: 10px; padding: 8px 10px; background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border); border-radius: 6px; display: flex; flex-direction: column; gap: 4px;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span style="font-size: 0.72rem; color: #94a3b8; font-weight: 600; text-transform: uppercase;">Autonomous Nav Engine</span>
+                    <span id="autonav-state-badge" class="badge" style="background: rgba(0, 255, 136, 0.15); color: #00ff88; border: 1px solid #00ff88; font-size: 0.72rem; padding: 2px 8px; font-weight: bold; border-radius: 4px;">CLEAR CRUISE</span>
+                </div>
+                <div id="autonav-state-desc" style="font-size: 0.74rem; color: #cbd5e1; font-family: monospace;">Full corridor clear cruise</div>
+                <div id="autonav-target-heading" style="font-size: 0.70rem; color: #64748b; font-family: monospace;">Target Heading: --°</div>
             </div>
 
             <!-- Pan / Tilt Controls -->
@@ -327,9 +337,9 @@
             <div class="control-row" style="margin-bottom: 10px;">
                 <label style="display: flex; justify-content: space-between; font-size: 0.78rem;">
                     <span>Speed Ceiling (Fine 5% Steps):</span>
-                    <span id="speed-limit-val" style="color: var(--accent-green); font-weight: bold;">60%</span>
+                    <span id="speed-limit-val" style="color: var(--accent-green); font-weight: bold;">50%</span>
                 </label>
-                <input type="range" id="speed-limit-slider" min="10" max="100" step="5" value="60" oninput="updateSpeedLimit(this.value); this.blur();">
+                <input type="range" id="speed-limit-slider" min="5" max="100" step="5" value="50" oninput="updateSpeedLimit(this.value); this.blur();">
             </div>
 
             <!-- Steering & Strafe Fine Trim -->
@@ -413,6 +423,14 @@
                     <div class="stat-value" id="val-motors">0, 0, 0, 0</div>
                     <div class="stat-label">PWM (FL, FR, RL, RR)</div>
                 </div>
+                <div class="stat-box">
+                    <div class="stat-value" id="val-voice" style="color: #00e5ff;">--° (0%)</div>
+                    <div class="stat-label">Voice DOA Azimuth</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-value" id="val-radar" style="color: #f59e0b;">CLEAR</div>
+                    <div class="stat-label">HLK-LD2402 Radar</div>
+                </div>
             </div>
             <!-- Dual Needle Heading Compass Dial -->
             <canvas id="compass-canvas"></canvas>
@@ -427,17 +445,18 @@
                 </div>
                 <div style="display: flex; align-items: center; gap: 8px;">
                     <span id="picam-badge" class="badge offline" style="font-size: 0.7rem; padding: 2px 8px;">OFFLINE</span>
+                    <button id="picam-fs-btn" title="Toggle Fullscreen FPV" onclick="togglePiCamFullscreen(event)" style="background: none; border: none; color: var(--text-dim); font-size: 0.85rem; cursor: pointer; padding: 2px 4px;">⛶</button>
                     <button id="picam-collapse-btn" style="background: none; border: none; color: var(--text-dim); font-size: 0.85rem; cursor: pointer;">▼</button>
                 </div>
             </div>
             <div id="picam-body" style="display: flex; flex-direction: column; gap: 10px;">
                 <!-- Stream container -->
                 <div style="position: relative; width: 100%; height: 240px; background: #070a13; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center;">
-                    <img id="picam-stream-img" src="http://192.168.0.103:8081/stream" alt="Pi Camera Feed" style="width: 100%; height: 100%; object-fit: contain; display: block;" onerror="handlePiCamError(this)">
+                    <img id="picam-stream-img" alt="Pi Camera Feed" style="width: 100%; height: 100%; object-fit: contain; display: block;" onerror="handlePiCamError(this)">
                     <div id="picam-placeholder" style="position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; background: rgba(11,15,25,0.95); color: #94a3b8; font-size: 0.8rem; gap: 6px;">
                         <span style="font-size: 1.5rem;">📷</span>
                         <span>Optical Feed Disconnected</span>
-                        <span style="font-size: 0.7rem; color: #64748b;">Waiting for Pi 3B+ @ 192.168.0.103:8081</span>
+                        <span style="font-size: 0.7rem; color: #64748b;">Waiting for Pi 3B+ Camera Feed...</span>
                     </div>
                     <!-- Live Video Overlay Badges -->
                     <div style="position: absolute; top: 8px; left: 8px; display: flex; gap: 6px; z-index: 2;">
@@ -449,13 +468,16 @@
                 <!-- 3-Sector Visual Clearance Bars -->
                 <div style="background: rgba(15,23,42,0.6); padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border);">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                        <span style="font-size: 0.72rem; color: var(--text-dim); font-weight: 600; text-transform: uppercase;">Visual Clearance Sectors</span>
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            <span style="font-size: 0.72rem; color: var(--text-dim); font-weight: 600; text-transform: uppercase;">Visual Clearance Sectors</span>
+                            <span class="badge" style="background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid #38bdf8; font-size: 0.62rem; padding: 1px 5px; border-radius: 4px;">MOUNT: FRONT (0°)</span>
+                        </div>
                         <span id="picam-heading-sugg" style="font-size: 0.72rem; color: #38bdf8; font-family: monospace;">Clear: 0.0°</span>
                     </div>
                     <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;">
                         <div>
                             <div style="display: flex; justify-content: space-between; font-size: 0.7rem; margin-bottom: 2px;">
-                                <span style="color: #94a3b8;">Left</span>
+                                <span style="color: #94a3b8;">L (+16° L)</span>
                                 <span id="picam-bar-l-val" style="color: #38bdf8; font-family: monospace;">2000mm</span>
                             </div>
                             <div style="background: #1e293b; height: 6px; border-radius: 3px; overflow: hidden;">
@@ -464,7 +486,7 @@
                         </div>
                         <div>
                             <div style="display: flex; justify-content: space-between; font-size: 0.7rem; margin-bottom: 2px;">
-                                <span style="color: #94a3b8;">Front</span>
+                                <span style="color: #94a3b8;">C (0° FWD)</span>
                                 <span id="picam-bar-f-val" style="color: #38bdf8; font-family: monospace;">2000mm</span>
                             </div>
                             <div style="background: #1e293b; height: 6px; border-radius: 3px; overflow: hidden;">
@@ -473,7 +495,7 @@
                         </div>
                         <div>
                             <div style="display: flex; justify-content: space-between; font-size: 0.7rem; margin-bottom: 2px;">
-                                <span style="color: #94a3b8;">Right</span>
+                                <span style="color: #94a3b8;">R (-16° R)</span>
                                 <span id="picam-bar-r-val" style="color: #38bdf8; font-family: monospace;">2000mm</span>
                             </div>
                             <div style="background: #1e293b; height: 6px; border-radius: 3px; overflow: hidden;">
@@ -521,6 +543,7 @@
                     <button id="btn-cam-mode" style="background: #1e293b; color: #38bdf8; border: 1px solid #334155; padding: 4px 10px; border-radius: 4px; font-size: 0.72rem; cursor: pointer; transition: all 0.2s;">🎥 Chase Cam: OFF</button>
                     <button id="btn-center-rover" style="background: #1e293b; color: #94a3b8; border: 1px solid #334155; padding: 4px 10px; border-radius: 4px; font-size: 0.72rem; cursor: pointer; transition: all 0.2s;">🎯 Center</button>
                     <button id="btn-clear-trail" style="background: #1e293b; color: #94a3b8; border: 1px solid #334155; padding: 4px 10px; border-radius: 4px; font-size: 0.72rem; cursor: pointer; transition: all 0.2s;">🧹 Clear Trail</button>
+                    <button id="btn-clear-map" style="background: #1e293b; color: #38bdf8; border: 1px solid #0284c7; padding: 4px 10px; border-radius: 4px; font-size: 0.72rem; cursor: pointer; transition: all 0.2s;">🗺️ Clear Map</button>
                 </div>
             </div>
             <div id="rover-3d-container" style="width: 100%; height: 480px; border-radius: 8px; overflow: hidden; background: #070a13; position: relative;">
@@ -528,7 +551,7 @@
                     Orbit: Left Drag · Pan: Right Drag · Zoom: Scroll · Chase: Toggle Above
                 </div>
                 <div id="telemetry-hud-3d" style="position: absolute; top: 10px; right: 12px; font-size: 0.75rem; color: #38bdf8; font-family: monospace; z-index: 5; background: rgba(15,23,42,0.85); padding: 5px 12px; border-radius: 6px; border: 1px solid #1e293b; backdrop-filter: blur(4px);">
-                    <span id="hud-yaw">0.0°</span> | <span id="hud-pos" style="color: #4ade80;">X: 0.00m Y: 0.00m</span>
+                    <span id="hud-yaw">0.0°</span> | <span id="hud-pos" style="color: #4ade80;">X: 0.00m Y: 0.00m</span> | <span id="hud-map-stats" style="color: #38bdf8;">MAP: 0 walls</span>
                 </div>
             </div>
         </div>
@@ -790,6 +813,8 @@
             drawTickRateChart();
         }
 
+        let currentDoaDeg = 0.0, currentDoaConf = 0.0, currentRadarPres = false, currentRadarMm = 0, currentVoiceState = "IDLE_LISTEN";
+
         function drawCompass(yawRad, magRad) {
             const w = compassCanvas.width = compassCanvas.offsetWidth;
             const h = compassCanvas.height = compassCanvas.offsetHeight;
@@ -816,7 +841,56 @@
             compassCtx.fillText('E', cx + r - 8, cy);
             compassCtx.fillText('W', cx - r + 8, cy);
 
-            // 1. Draw Magnetometer Needle (Amber dashed)
+            // 1. Draw Radar ±60° Forward Field of View Cone on Compass
+            compassCtx.save();
+            compassCtx.translate(cx, cy);
+            compassCtx.rotate(yawRad);
+            compassCtx.beginPath();
+            compassCtx.moveTo(0, 0);
+            compassCtx.arc(0, 0, r * 0.82, -Math.PI / 2 - Math.PI / 3, -Math.PI / 2 + Math.PI / 3);
+            compassCtx.closePath();
+            compassCtx.fillStyle = currentRadarPres ? 'rgba(239, 68, 68, 0.25)' : 'rgba(245, 158, 11, 0.12)';
+            compassCtx.fill();
+            compassCtx.strokeStyle = currentRadarPres ? 'rgba(239, 68, 68, 0.7)' : 'rgba(245, 158, 11, 0.4)';
+            compassCtx.lineWidth = 1;
+            compassCtx.stroke();
+
+            // Radar detected target marker
+            if (currentRadarPres) {
+                const targetDistRatio = Math.min(1.0, Math.max(0.15, (currentRadarMm || 1000) / 4000.0));
+                const pipY = -r * 0.82 * targetDistRatio;
+                compassCtx.beginPath();
+                compassCtx.arc(0, pipY, 4.5, 0, Math.PI * 2);
+                compassCtx.fillStyle = '#ef4444';
+                compassCtx.fill();
+                compassCtx.strokeStyle = '#ffffff';
+                compassCtx.lineWidth = 1.5;
+                compassCtx.stroke();
+            }
+
+            // Voice DOA Acoustic Bearing Vector (Cyan ray)
+            if (currentDoaConf > 0.15) {
+                compassCtx.save();
+                const doaRad = -currentDoaDeg * Math.PI / 180.0;
+                compassCtx.rotate(doaRad);
+                compassCtx.beginPath();
+                compassCtx.moveTo(0, 0);
+                compassCtx.lineTo(0, -r + 6);
+                compassCtx.strokeStyle = '#00e5ff';
+                compassCtx.lineWidth = 2.5;
+                compassCtx.stroke();
+
+                compassCtx.beginPath();
+                compassCtx.moveTo(0, -r + 4);
+                compassCtx.lineTo(-4, -r + 13);
+                compassCtx.lineTo(4, -r + 13);
+                compassCtx.fillStyle = '#00e5ff';
+                compassCtx.fill();
+                compassCtx.restore();
+            }
+            compassCtx.restore();
+
+            // 2. Draw Magnetometer Needle (Amber dashed)
             compassCtx.save();
             compassCtx.translate(cx, cy);
             compassCtx.rotate(magRad);
@@ -829,7 +903,7 @@
             compassCtx.stroke();
             compassCtx.restore();
 
-            // 2. Draw Fused Heading Needle (Red pointer)
+            // 3. Draw Fused Heading Needle (Red pointer)
             compassCtx.save();
             compassCtx.translate(cx, cy);
             compassCtx.rotate(yawRad);
@@ -955,7 +1029,7 @@
 
         
         // --- Precision & Finer Controls State ---
-        let speedCeiling = 0.60;
+        let speedCeiling = 0.50;
         let trimVx = 0, trimVy = 0, trimVz = 0;
 
         function updateSpeedLimit(val) {
@@ -1027,14 +1101,22 @@
             }
         }
 
-        // Global Keyboard Teleop (WASD + Q/E)
+        // Global Keyboard Teleop (WASD + Arrow Keys + Q/E + Space + Escape)
         window.addEventListener('keydown', (e) => {
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+            if (e.code === 'Escape') {
+                const modal = document.getElementById('fpv-modal');
+                if (modal && modal.style.display === 'flex') {
+                    togglePiCamFullscreen(e);
+                    e.preventDefault();
+                    return;
+                }
+            }
             let updated = false;
-            if (e.code === 'KeyW') { vx = speedCeiling; updated = true; }
-            else if (e.code === 'KeyS') { vx = -speedCeiling; updated = true; }
-            if (e.code === 'KeyA') { vy = speedCeiling; updated = true; }
-            else if (e.code === 'KeyD') { vy = -speedCeiling; updated = true; }
+            if (e.code === 'KeyW' || e.code === 'ArrowUp') { vx = speedCeiling; updated = true; }
+            else if (e.code === 'KeyS' || e.code === 'ArrowDown') { vx = -speedCeiling; updated = true; }
+            if (e.code === 'KeyA' || e.code === 'ArrowLeft') { vy = speedCeiling; updated = true; }
+            else if (e.code === 'KeyD' || e.code === 'ArrowRight') { vy = -speedCeiling; updated = true; }
             if (e.code === 'KeyQ') { vz = speedCeiling; updated = true; }
             else if (e.code === 'KeyE') { vz = -speedCeiling; updated = true; }
             if (e.code === 'Space') { triggerEStop(); e.preventDefault(); return; }
@@ -1047,8 +1129,8 @@
         window.addEventListener('keyup', (e) => {
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
             let updated = false;
-            if (e.code === 'KeyW' || e.code === 'KeyS') { vx = 0; updated = true; }
-            if (e.code === 'KeyA' || e.code === 'KeyD') { vy = 0; updated = true; }
+            if (e.code === 'KeyW' || e.code === 'KeyS' || e.code === 'ArrowUp' || e.code === 'ArrowDown') { vx = 0; updated = true; }
+            if (e.code === 'KeyA' || e.code === 'KeyD' || e.code === 'ArrowLeft' || e.code === 'ArrowRight') { vy = 0; updated = true; }
             if (e.code === 'KeyQ' || e.code === 'KeyE') { vz = 0; updated = true; }
             if (updated) {
                 sendControl();
@@ -1096,6 +1178,8 @@
         let usCone = null, usDisc = null;
         let tofLRay = null, tofLDisc = null;
         let tofRRay = null, tofRDisc = null;
+        let radarConeMesh = null, radarTargetMesh = null;
+        let doaArrow = null;
 
         if (container3D && typeof THREE !== 'undefined') {
             const scene = new THREE.Scene();
@@ -1238,6 +1322,265 @@
             const serverDotCloud = new THREE.Points(serverDotGeo, serverDotMat);
             scene.add(serverDotCloud);
 
+            // --- 3D Environment Occupancy Grid & Wall Reconstruction Engine ---
+            const MAP_RES = 0.06; // 6cm spatial cell resolution
+            const MAX_WALL_INSTANCES = 1600;
+            const occupancyGrid = new Map(); // key -> { gx, gz, x, z, logOdds, hits, lastSeen, confirmed }
+
+            // 1. 3D Holographic Wall Blocks (InstancedMesh)
+            const wallBoxGeo = new THREE.BoxGeometry(MAP_RES * 0.94, 0.32, MAP_RES * 0.94);
+            wallBoxGeo.translate(0, 0.16, 0); // resting on floor Y=0..0.32m
+            const wallMat = new THREE.MeshStandardMaterial({
+                color: 0x0284c7,
+                roughness: 0.25,
+                metalness: 0.75,
+                transparent: true,
+                opacity: 0.88,
+                emissive: 0x0369a1,
+                emissiveIntensity: 0.35
+            });
+            const wallInstancedMesh = new THREE.InstancedMesh(wallBoxGeo, wallMat, MAX_WALL_INSTANCES);
+            wallInstancedMesh.count = 0;
+            wallInstancedMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+            wallInstancedMesh.castShadow = true;
+            wallInstancedMesh.receiveShadow = true;
+            scene.add(wallInstancedMesh);
+
+            // 2. Glowing Wall Top Contours (Connecting neighboring wall blocks)
+            const MAX_WALL_LINES = 1600;
+            const wallLinePositions = new Float32Array(MAX_WALL_LINES * 2 * 3);
+            const wallLineGeo = new THREE.BufferGeometry();
+            wallLineGeo.setAttribute('position', new THREE.BufferAttribute(wallLinePositions, 3));
+            wallLineGeo.setDrawRange(0, 0);
+            const wallLineMat = new THREE.LineBasicMaterial({
+                color: 0x38bdf8,
+                linewidth: 2,
+                transparent: true,
+                opacity: 0.95
+            });
+            const wallLineSegments = new THREE.LineSegments(wallLineGeo, wallLineMat);
+            scene.add(wallLineSegments);
+
+            // 3. Persistent Wall Hit Point Cloud (Emerald/Cyan for confirmed, Amber for candidate)
+            const MAX_MAP_DOTS = 1000;
+            const mapDotPositions = new Float32Array(MAX_MAP_DOTS * 3);
+            const mapDotColors = new Float32Array(MAX_MAP_DOTS * 3);
+            const mapDotGeo = new THREE.BufferGeometry();
+            mapDotGeo.setAttribute('position', new THREE.BufferAttribute(mapDotPositions, 3));
+            mapDotGeo.setAttribute('color', new THREE.BufferAttribute(mapDotColors, 3));
+            mapDotGeo.setDrawRange(0, 0);
+            const mapDotMat = new THREE.PointsMaterial({
+                size: 0.045,
+                vertexColors: true,
+                transparent: true,
+                opacity: 0.95
+            });
+            const mapDotCloud = new THREE.Points(mapDotGeo, mapDotMat);
+            scene.add(mapDotCloud);
+
+            // Rolling sensor filters for outlier rejection
+            const tofLHistory = [];
+            const tofRHistory = [];
+            const ultraHistory = [];
+            const HIST_SIZE = 5;
+
+            function filterSensorDist(history, rawDistMm) {
+                if (!rawDistMm || rawDistMm < 30 || rawDistMm > 1800) return null;
+                history.push(rawDistMm);
+                if (history.length > HIST_SIZE) history.shift();
+                if (history.length < 2) return rawDistMm / 1000.0;
+                const sorted = [...history].sort((a, b) => a - b);
+                const median = sorted[Math.floor(sorted.length / 2)];
+                if (Math.abs(rawDistMm - median) > 250) {
+                    return median / 1000.0;
+                }
+                return rawDistMm / 1000.0;
+            }
+
+            const dummyMatrix = new THREE.Matrix4();
+            let confirmedWallCount = 0;
+
+            function update3DMapFromSensors(rPosX, rPosZ, rYaw, rawTofL, rawTofR, rawUltra) {
+                const now = performance.now();
+                const dL = filterSensorDist(tofLHistory, rawTofL);
+                const dR = filterSensorDist(tofRHistory, rawTofR);
+                const dU = filterSensorDist(ultraHistory, rawUltra);
+
+                const fwdX = -Math.sin(rYaw), fwdZ = -Math.cos(rYaw);
+                const rightX = Math.cos(rYaw), rightZ = -Math.sin(rYaw);
+
+                const hitsToProcess = [];
+
+                // Left ToF: mount at 8.39cm fwd, 5.45cm left (-right), beam angle +33° (+0.57596 rad)
+                if (dL !== null && dL >= 0.03 && dL <= 1.5) {
+                    const mX = rPosX + fwdX * 0.0839 - rightX * 0.0545;
+                    const mZ = rPosZ + fwdZ * 0.0839 - rightZ * 0.0545;
+                    const bYaw = rYaw + 0.57596;
+                    const bDirX = -Math.sin(bYaw), bDirZ = -Math.cos(bYaw);
+                    hitsToProcess.push({
+                        mX, mZ,
+                        hX: mX + bDirX * dL,
+                        hZ: mZ + bDirZ * dL,
+                        dist: dL
+                    });
+                }
+
+                // Right ToF: mount at 8.39cm fwd, 5.45cm right (+right), beam angle -33° (-0.57596 rad)
+                if (dR !== null && dR >= 0.03 && dR <= 1.5) {
+                    const mX = rPosX + fwdX * 0.0839 + rightX * 0.0545;
+                    const mZ = rPosZ + fwdZ * 0.0839 + rightZ * 0.0545;
+                    const bYaw = rYaw - 0.57596;
+                    const bDirX = -Math.sin(bYaw), bDirZ = -Math.cos(bYaw);
+                    hitsToProcess.push({
+                        mX, mZ,
+                        hX: mX + bDirX * dR,
+                        hZ: mZ + bDirZ * dR,
+                        dist: dR
+                    });
+                }
+
+                // Front Ultrasonic: only if corroborated by ToF to reject multipath
+                if (dU !== null && dU >= 0.03 && dU <= 1.5 && (dL !== null || dR !== null)) {
+                    const mX = rPosX + fwdX * 0.11;
+                    const mZ = rPosZ + fwdZ * 0.11;
+                    hitsToProcess.push({
+                        mX, mZ,
+                        hX: mX + fwdX * dU,
+                        hZ: mZ + fwdZ * dU,
+                        dist: dU
+                    });
+                }
+
+                for (const hit of hitsToProcess) {
+                    // Free-space clearing along ray
+                    const steps = Math.floor(hit.dist / MAP_RES);
+                    const dx = (hit.hX - hit.mX) / (steps || 1);
+                    const dz = (hit.hZ - hit.mZ) / (steps || 1);
+                    for (let s = 1; s < steps - 1; s++) {
+                        const rx = hit.mX + dx * s;
+                        const rz = hit.mZ + dz * s;
+                        const gx = Math.round(rx / MAP_RES);
+                        const gz = Math.round(rz / MAP_RES);
+                        const key = `${gx}_${gz}`;
+                        const cell = occupancyGrid.get(key);
+                        if (cell) {
+                            cell.logOdds = Math.max(-4.0, cell.logOdds - 0.35);
+                            if (cell.logOdds < 0.5) cell.confirmed = false;
+                        }
+                    }
+
+                    // Occupied hit cell update with log-odds
+                    const gx = Math.round(hit.hX / MAP_RES);
+                    const gz = Math.round(hit.hZ / MAP_RES);
+                    const key = `${gx}_${gz}`;
+                    let cell = occupancyGrid.get(key);
+                    if (!cell) {
+                        cell = { gx, gz, x: gx * MAP_RES, z: gz * MAP_RES, logOdds: 0.0, hits: 0, lastSeen: now, confirmed: false };
+                        occupancyGrid.set(key, cell);
+                    }
+                    cell.hits += 1;
+                    cell.logOdds = Math.min(10.0, cell.logOdds + 2.2);
+                    cell.lastSeen = now;
+
+                    // Temporal confirmation gate: >= 3 observations and log-odds >= 2.4
+                    if (cell.hits >= 3 && cell.logOdds >= 2.4) {
+                        cell.confirmed = true;
+                    }
+                }
+            }
+
+            let lastMeshUpdate = 0;
+            function render3DMapMesh() {
+                const now = performance.now();
+                if (now - lastMeshUpdate < 75) return;
+                lastMeshUpdate = now;
+
+                let instCount = 0;
+                let dotCount = 0;
+                let lineVertCount = 0;
+                confirmedWallCount = 0;
+
+                const confirmedCells = [];
+
+                for (const [key, cell] of occupancyGrid) {
+                    const elapsed = now - cell.lastSeen;
+                    if (elapsed > 15000) {
+                        cell.logOdds -= 0.02 * (elapsed / 1000);
+                        if (cell.logOdds < 1.0) cell.confirmed = false;
+                    }
+                    if (elapsed > 90000 || cell.logOdds <= -3.0) {
+                        occupancyGrid.delete(key);
+                        continue;
+                    }
+
+                    if (cell.confirmed) {
+                        confirmedWallCount++;
+                        confirmedCells.push(cell);
+
+                        if (instCount < MAX_WALL_INSTANCES) {
+                            dummyMatrix.setPosition(cell.x, 0, cell.z);
+                            wallInstancedMesh.setMatrixAt(instCount, dummyMatrix);
+                            instCount++;
+                        }
+
+                        if (dotCount < MAX_MAP_DOTS) {
+                            mapDotPositions[dotCount * 3 + 0] = cell.x;
+                            mapDotPositions[dotCount * 3 + 1] = 0.33;
+                            mapDotPositions[dotCount * 3 + 2] = cell.z;
+
+                            mapDotColors[dotCount * 3 + 0] = 0.0;
+                            mapDotColors[dotCount * 3 + 1] = 0.95;
+                            mapDotColors[dotCount * 3 + 2] = 0.85;
+                            dotCount++;
+                        }
+                    } else if (cell.hits >= 1 && dotCount < MAX_MAP_DOTS) {
+                        mapDotPositions[dotCount * 3 + 0] = cell.x;
+                        mapDotPositions[dotCount * 3 + 1] = 0.04;
+                        mapDotPositions[dotCount * 3 + 2] = cell.z;
+
+                        mapDotColors[dotCount * 3 + 0] = 0.95;
+                        mapDotColors[dotCount * 3 + 1] = 0.60;
+                        mapDotColors[dotCount * 3 + 2] = 0.10;
+                        dotCount++;
+                    }
+                }
+
+                const neighborDistSq = (MAP_RES * 1.55) * (MAP_RES * 1.55);
+                for (let i = 0; i < confirmedCells.length && lineVertCount < MAX_WALL_LINES * 2; i++) {
+                    const c1 = confirmedCells[i];
+                    for (let j = i + 1; j < confirmedCells.length && lineVertCount < MAX_WALL_LINES * 2; j++) {
+                        const c2 = confirmedCells[j];
+                        const dx = c1.x - c2.x, dz = c1.z - c2.z;
+                        if (dx * dx + dz * dz <= neighborDistSq) {
+                            wallLinePositions[lineVertCount * 3 + 0] = c1.x;
+                            wallLinePositions[lineVertCount * 3 + 1] = 0.32;
+                            wallLinePositions[lineVertCount * 3 + 2] = c1.z;
+                            lineVertCount++;
+
+                            wallLinePositions[lineVertCount * 3 + 0] = c2.x;
+                            wallLinePositions[lineVertCount * 3 + 1] = 0.32;
+                            wallLinePositions[lineVertCount * 3 + 2] = c2.z;
+                            lineVertCount++;
+                        }
+                    }
+                }
+
+                wallInstancedMesh.count = instCount;
+                wallInstancedMesh.instanceMatrix.needsUpdate = true;
+
+                mapDotGeo.attributes.position.needsUpdate = true;
+                mapDotGeo.attributes.color.needsUpdate = true;
+                mapDotGeo.setDrawRange(0, dotCount);
+
+                wallLineGeo.attributes.position.needsUpdate = true;
+                wallLineGeo.setDrawRange(0, lineVertCount);
+
+                const hudMap = document.getElementById('hud-map-stats');
+                if (hudMap) {
+                    hudMap.innerText = `MAP: ${confirmedWallCount} walls (${(confirmedWallCount * MAP_RES).toFixed(1)}m)`;
+                }
+            }
+
             function addTrailPoint(x, z) {
                 if (Math.hypot(x - lastTrailX, z - lastTrailZ) < 0.03) return; // 3cm threshold
                 lastTrailX = x;
@@ -1290,7 +1633,7 @@
             usConeGeo.translate(0, 0, -0.3);
             const usConeMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.22, wireframe: true });
             usCone = new THREE.Mesh(usConeGeo, usConeMat);
-            usCone.position.set(0, 0.12, -0.16);
+            usCone.position.set(0, 0.12, -0.11); // 11cm from centre at front (0 deg)
             roverMesh.add(usCone);
 
             const usDiscGeo = new THREE.RingGeometry(0.02, 0.12, 16);
@@ -1299,21 +1642,48 @@
             usDisc.position.set(0, 0.12, -0.6);
             roverMesh.add(usDisc);
 
-            // 2. Dual ToF Beams (Left & Right, angled at ±32°)
+            // 2. Dual ToF Beams (Left & Right, angled at ±33°, 10 cm from centre)
             const tofGeo = new THREE.CylinderGeometry(0.004, 0.004, 0.5, 8);
             tofGeo.rotateX(-Math.PI / 2);
             tofGeo.translate(0, 0, -0.25);
             const tofMatL = new THREE.MeshBasicMaterial({ color: 0x10b981, transparent: true, opacity: 0.6 });
             tofLRay = new THREE.Mesh(tofGeo, tofMatL);
-            tofLRay.position.set(-0.12, 0.10, -0.15);
-            tofLRay.rotation.y = 0.5585; // +32 deg left
+            tofLRay.position.set(-0.0545, 0.10, -0.0839);
+            tofLRay.rotation.y = 0.57596; // +33 deg left
             roverMesh.add(tofLRay);
 
             const tofMatR = new THREE.MeshBasicMaterial({ color: 0x10b981, transparent: true, opacity: 0.6 });
             tofRRay = new THREE.Mesh(tofGeo.clone(), tofMatR);
-            tofRRay.position.set(0.12, 0.10, -0.15);
-            tofRRay.rotation.y = -0.5585; // -32 deg right
+            tofRRay.position.set(0.0545, 0.10, -0.0839);
+            tofRRay.rotation.y = -0.57596; // -33 deg right
             roverMesh.add(tofRRay);
+
+            // 3. HLK-LD2402 24GHz Radar ±60° Field of View Cone & Target Indicator
+            const radarConeGeo = new THREE.RingGeometry(0.08, 2.0, 32, 1, Math.PI / 2 - Math.PI / 3, 2 * Math.PI / 3);
+            radarConeGeo.rotateX(-Math.PI / 2);
+            const radarConeMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.14, side: THREE.DoubleSide });
+            radarConeMesh = new THREE.Mesh(radarConeGeo, radarConeMat);
+            radarConeMesh.position.set(0, 0.06, -0.11);
+            roverMesh.add(radarConeMesh);
+
+            const radarTargetGeo = new THREE.SphereGeometry(0.045, 16, 16);
+            const radarTargetMat = new THREE.MeshBasicMaterial({ color: 0xef4444 });
+            radarTargetMesh = new THREE.Mesh(radarTargetGeo, radarTargetMat);
+            radarTargetMesh.position.set(0, 0.06, -0.6);
+            radarTargetMesh.visible = false;
+            roverMesh.add(radarTargetMesh);
+
+            // 4. 3D Acoustic Bearing Indicator (Voice DOA Arrow at mast height z=0.16m)
+            doaArrow = new THREE.ArrowHelper(
+                new THREE.Vector3(0, 0, -1),
+                new THREE.Vector3(0, 0.16, 0),
+                0.65,
+                0x00e5ff,
+                0.14,
+                0.09
+            );
+            doaArrow.visible = false;
+            roverMesh.add(doaArrow);
 
             // --- Load User's Authentic PBR 3D Rover Model ---
             const loader = new THREE.GLTFLoader();
@@ -1378,7 +1748,7 @@
 
             // Interactive Simulator State
             let simMode = true; // Interactive 3D Arena Simulator enabled by default
-            let simPosX = 0.0, simPosZ = 0.0, simYaw = 0.0;
+            let simPosX = 0.0, simPosZ = 0.0, simYaw = 0.0, targetSimYaw = 0.0, currentPitchRad = 0.0, currentRollRad = 0.0;
             let lastTelemTime = 0;
             let isAutoDemo = false, autoDemoTime = 0;
 
@@ -1430,6 +1800,22 @@
                 });
             }
 
+            const btnClearMap = document.getElementById('btn-clear-map');
+            if (btnClearMap) {
+                btnClearMap.addEventListener('click', () => {
+                    occupancyGrid.clear();
+                    wallInstancedMesh.count = 0;
+                    wallInstancedMesh.instanceMatrix.needsUpdate = true;
+                    mapDotGeo.setDrawRange(0, 0);
+                    mapDotGeo.attributes.position.needsUpdate = true;
+                    mapDotGeo.attributes.color.needsUpdate = true;
+                    wallLineGeo.setDrawRange(0, 0);
+                    wallLineGeo.attributes.position.needsUpdate = true;
+                    const hudMap = document.getElementById('hud-map-stats');
+                    if (hudMap) hudMap.innerText = 'MAP: 0 walls';
+                });
+            }
+
             // Disengage Chase Cam if user manually interacts with orbit controls
             controls.addEventListener('start', () => {
                 if (isChaseCam) {
@@ -1453,15 +1839,15 @@
                 // Real-Time Simulator Kinematics Engine
                 const timeSinceTelem = now - lastTelemTime;
                 if (simMode && timeSinceTelem > 1200) {
-                    // Calculate simulated obstacle proximity for the 3 sensors (0° US, +32° Left ToF, -32° Right ToF)
+                    // Calculate simulated obstacle proximity for the 3 sensors (0° US, +33° Left ToF, -33° Right ToF)
                     let minUsDist = 2.0;
                     let minTofLDist = 2.0;
                     let minTofRDist = 2.0;
 
                     if (typeof arenaObstacles !== 'undefined') {
-                        const frontX = Math.sin(simYaw), frontZ = -Math.cos(simYaw);
-                        const leftAng = simYaw + 0.5585, leftX = Math.sin(leftAng), leftZ = -Math.cos(leftAng);
-                        const rightAng = simYaw - 0.5585, rightX = Math.sin(rightAng), rightZ = -Math.cos(rightAng);
+                        const frontX = -Math.sin(simYaw), frontZ = -Math.cos(simYaw);
+                        const leftAng = simYaw + 0.57596, leftX = -Math.sin(leftAng), leftZ = -Math.cos(leftAng);
+                        const rightAng = simYaw - 0.57596, rightX = -Math.sin(rightAng), rightZ = -Math.cos(rightAng);
 
                         for (const obs of arenaObstacles) {
                             const ox = obs.x - simPosX, oz = obs.z - simPosZ;
@@ -1484,21 +1870,11 @@
                     let cmdVz = vz; // yaw rate [-2..+2]
 
                     if (activeMode === 7 && Math.abs(vx) < 0.08 && Math.abs(vy) < 0.08 && Math.abs(vz) < 0.08) {
-                        // Semi-Autonomous Tank Mode using 0° US and ±32° ToF sensors
-                        cmdVy = 0.0; // Strictly Tank Mode (no lateral strafe)
-                        const stopF = 0.28, stopT = 0.25, warnF = 0.65, warnT = 0.58;
-                        if (minUsDist < stopF || minTofLDist < stopT || minTofRDist < stopT) {
-                            const turnDir = (minTofRDist >= minTofLDist) ? 1.0 : -1.0;
-                            cmdVx = (minUsDist < 0.17) ? -0.22 : 0.0;
-                            cmdVz = 0.45 * turnDir;
-                        } else {
-                            const repL = Math.max(0, Math.min(1, (warnT - minTofLDist) / (warnT - stopT)));
-                            const repR = Math.max(0, Math.min(1, (warnT - minTofRDist) / (warnT - stopT)));
-                            const repF = Math.max(0, Math.min(1, (warnF - minUsDist) / (warnF - stopF))) * (minTofRDist >= minTofLDist ? 0.4 : -0.4);
-                            cmdVz = Math.max(-0.5, Math.min(0.5, (repL - repR) * 0.65 + repF));
-                            cmdVx = 0.25 * (1.0 - 0.35 * Math.abs(cmdVz));
-                        }
-                        statusEl.textContent = 'Semi-Auto (Tank): Navigating via 0° US & ±32° ToF';
+                        // Idle with zero input must give zero motor output
+                        cmdVx = 0.0;
+                        cmdVy = 0.0;
+                        cmdVz = 0.0;
+                        statusEl.textContent = 'Semi-Auto (Tank): Idle (Zero Motor Output)';
                     } else if (isAutoDemo) {
                         autoDemoTime += dt;
                         const phase = autoDemoTime % 16.0;
@@ -1519,7 +1895,8 @@
 
                     // Universal Crash Protection across all modes
                     if (crashProtOn && cmdVx > 0) {
-                        const sF = Math.max(0, Math.min(1, (minUsDist - 0.22) / (0.48 - 0.22)));
+                        const tofCorrob = (minTofLDist < 0.65 || minTofRDist < 0.65);
+                        const sF = tofCorrob ? Math.max(0, Math.min(1, (minUsDist - 0.22) / (0.48 - 0.22))) : 1.0;
                         const sL = Math.max(0, Math.min(1, (minTofLDist - 0.20) / (0.44 - 0.20)));
                         const sR = Math.max(0, Math.min(1, (minTofRDist - 0.20) / (0.44 - 0.20)));
                         const origVx = cmdVx;
@@ -1538,9 +1915,9 @@
                     const strafeMps = (activeMode === 3 || activeMode === 7 ? 0 : cmdVy) * spdScale;
 
                     // Forward is -Z in arena, Strafe right is +X
-                    simPosX += (strafeMps * cosY + fwdMps * sinY) * dt;
-                    simPosZ += (-fwdMps * cosY + strafeMps * sinY) * dt;
-                    simYaw -= cmdVz * 1.6 * dt;
+                    simPosX += (-fwdMps * sinY + strafeMps * cosY) * dt;
+                    simPosZ += (-fwdMps * cosY - strafeMps * sinY) * dt;
+                    simYaw += cmdVz * 1.6 * dt;
 
                     // Keep inside arena boundary
                     simPosX = Math.max(-6.5, Math.min(6.5, simPosX));
@@ -1579,6 +1956,35 @@
                     if (typeof drawCompass === 'function') {
                         drawCompass(hdDeg * Math.PI / 180.0, hdDeg * Math.PI / 180.0);
                     }
+
+                    // Dynamically map walls in simulator mode
+                    update3DMapFromSensors(simPosX, simPosZ, simYaw, minTofLDist * 1000, minTofRDist * 1000, minUsDist * 1000);
+                } else if (timeSinceTelem <= 1200) {
+                    // Live Telemetry Heading Tracking with Smooth Shortest-Angle Interpolation
+                    let diff = (targetSimYaw - simYaw) % (Math.PI * 2);
+                    if (diff < -Math.PI) diff += Math.PI * 2;
+                    if (diff > Math.PI) diff -= Math.PI * 2;
+                    if (Math.abs(diff) > 2.8) simYaw = targetSimYaw;
+                    else simYaw += diff * Math.min(1.0, dt * 18.0);
+
+                    if (roverMesh) {
+                        roverMesh.rotation.order = 'YXZ';
+                        roverMesh.rotation.y = simYaw;
+                        roverMesh.rotation.x = currentPitchRad;
+                        roverMesh.rotation.z = currentRollRad;
+                    }
+
+                    const hdDeg = (((-simYaw * 180 / Math.PI) % 360) + 360) % 360;
+                    const elYaw = document.getElementById('val-yaw');
+                    if (elYaw) elYaw.innerText = hdDeg.toFixed(1) + '°';
+                    if (hudYawEl) {
+                        const pDeg = currentPitchRad * 180.0 / Math.PI;
+                        const rDeg = -currentRollRad * 180.0 / Math.PI;
+                        hudYawEl.textContent = `Y:${hdDeg.toFixed(1)}° P:${pDeg >= 0 ? '+' : ''}${pDeg.toFixed(1)}° R:${rDeg >= 0 ? '+' : ''}${rDeg.toFixed(1)}°`;
+                    }
+                    if (typeof drawCompass === 'function') {
+                        drawCompass(hdDeg * Math.PI / 180.0, hdDeg * Math.PI / 180.0);
+                    }
                 }
 
                 // Chase Camera Follow Logic
@@ -1599,6 +2005,7 @@
                 }
 
                 controls.update();
+                render3DMapMesh();
                 renderer.render(scene, camera);
             }
             animate3D();
@@ -1655,16 +2062,57 @@
                 valRangeEl.innerText = `US:${Math.round(usMm / 10)} L:${Math.round(dispL / 10)} R:${Math.round(dispR / 10)}cm${tag}`;
             }
 
+            // Update Autonomous Navigation Engine State Badge (Dashboard + FPV HUD)
+            const autoBadgeEl = document.getElementById('autonav-state-badge');
+            const autoDescEl = document.getElementById('autonav-state-desc');
+            const autoHeadingEl = document.getElementById('autonav-target-heading');
+            const fpvAutoBadge = document.getElementById('fpv-autonav-badge');
+            const fpvAutoDesc = document.getElementById('fpv-autonav-desc');
+            const fpvSensors = document.getElementById('fpv-sensors');
+            const fpvHd = document.getElementById('fpv-hd');
+
+            if (data.auto_state_name) {
+                const sName = data.auto_state_name;
+                const sDesc = data.auto_state_desc || "";
+                const sColor = data.auto_state_color || "#00ff88";
+                const sHeading = (data.auto_target_heading !== undefined) ? Number(data.auto_target_heading).toFixed(1) : "--";
+
+                if (autoBadgeEl) {
+                    autoBadgeEl.innerText = sName;
+                    autoBadgeEl.style.color = sColor;
+                    autoBadgeEl.style.borderColor = sColor;
+                    autoBadgeEl.style.background = sColor + "22";
+                }
+                if (autoDescEl) autoDescEl.innerText = sDesc;
+                if (autoHeadingEl) autoHeadingEl.innerText = `Target Heading: ${sHeading}°`;
+
+                if (fpvAutoBadge) {
+                    fpvAutoBadge.innerText = sName;
+                    fpvAutoBadge.style.color = sColor;
+                    fpvAutoBadge.style.borderColor = sColor;
+                    fpvAutoBadge.style.background = sColor + "33";
+                }
+                if (fpvAutoDesc) fpvAutoDesc.innerText = sDesc;
+            }
+
+            if (fpvSensors) {
+                fpvSensors.innerText = `US:${Math.round(usMm / 10)}cm | L:${Math.round(dispL / 10)}cm | R:${Math.round(dispR / 10)}cm`;
+            }
+            if (fpvHd) {
+                const yDeg = data.yaw_deg !== undefined ? Number(data.yaw_deg).toFixed(1) : (data.hd !== undefined ? Number(data.hd).toFixed(1) : "--");
+                fpvHd.innerText = `HD: ${yDeg}°`;
+            }
+
             // Render ROS2 Server Sensory Fusion Path Trail
             if (data.path_trail && Array.isArray(data.path_trail) && serverPathGeo) {
                 const count = Math.min(data.path_trail.length, MAX_SERVER_PATH);
                 for (let i = 0; i < count; i++) {
                     const pt = data.path_trail[i];
-                    const px = Number(pt[0] !== undefined ? pt[0] : pt.x);
-                    const py = Number(pt[1] !== undefined ? pt[1] : pt.y);
-                    serverPathPos[i * 3 + 0] = px;
+                    const px = Number(pt[0] !== undefined ? pt[0] : pt.x); // North (m)
+                    const py = Number(pt[1] !== undefined ? pt[1] : pt.y); // East (m)
+                    serverPathPos[i * 3 + 0] = py;  // Three.js East (+X)
                     serverPathPos[i * 3 + 1] = 0.012;
-                    serverPathPos[i * 3 + 2] = -py;
+                    serverPathPos[i * 3 + 2] = -px; // Three.js North (-Z)
                 }
                 serverPathGeo.attributes.position.needsUpdate = true;
                 serverPathGeo.setDrawRange(0, count);
@@ -1675,11 +2123,11 @@
                 const count = Math.min(data.obstacle_dots.length, MAX_SERVER_DOTS);
                 for (let i = 0; i < count; i++) {
                     const pt = data.obstacle_dots[i];
-                    const px = Number(pt[0] !== undefined ? pt[0] : pt.x);
-                    const py = Number(pt[1] !== undefined ? pt[1] : pt.y);
-                    serverDotPos[i * 3 + 0] = px;
+                    const px = Number(pt[0] !== undefined ? pt[0] : pt.x); // North (m)
+                    const py = Number(pt[1] !== undefined ? pt[1] : pt.y); // East (m)
+                    serverDotPos[i * 3 + 0] = py;  // Three.js East (+X)
                     serverDotPos[i * 3 + 1] = 0.02;
-                    serverDotPos[i * 3 + 2] = -py;
+                    serverDotPos[i * 3 + 2] = -px; // Three.js North (-Z)
                 }
                 serverDotGeo.attributes.position.needsUpdate = true;
                 serverDotGeo.setDrawRange(0, count);
@@ -1687,15 +2135,14 @@
 
             // 1. Live 3D World Position Translation (Odometry)
             lastTelemTime = performance.now();
-            simPosX = posX;
-            simPosZ = -posY;
+            simPosX = posY;  // In Three.js: +X is East (posY)
+            simPosZ = -posX; // In Three.js: -Z is North (posX)
             if (pivotGroup) {
-                // In Three.js: +X is East, +Z is South (-Y in ROS REP-103)
-                pivotGroup.position.x = posX;
-                pivotGroup.position.z = -posY;
+                pivotGroup.position.x = simPosX;
+                pivotGroup.position.z = simPosZ;
 
                 // Record dynamic trajectory trail
-                addTrailPoint(posX, -posY);
+                addTrailPoint(simPosX, simPosZ);
             }
 
             // 2. Live 3D Orientation & Attitude Rotation
@@ -1711,18 +2158,17 @@
                 else if (data.hd !== undefined) yDeg = Number(data.hd);
                 else if (data.yaw !== undefined) yDeg = Number(data.yaw) * 180 / Math.PI;
 
-                simYaw = -yDeg * Math.PI / 180;
+                targetSimYaw = -yDeg * Math.PI / 180.0;
+                currentPitchRad = pDeg * Math.PI / 180.0;
+                currentRollRad = -rDeg * Math.PI / 180.0;
 
-                const q = data.q || data.quaternion;
-                if (q && Array.isArray(q) && q.length >= 4) {
-                    // Strict Onboard IMU 9-DoF Madgwick AHRS Sensor Fusion Projection
-                    roverMesh.quaternion.set(Number(q[1]), -Number(q[3]), -Number(q[2]), Number(q[0])).normalize();
-                } else {
-                    roverMesh.rotation.order = 'YXZ';
-                    roverMesh.rotation.y = -yDeg * Math.PI / 180;
-                    roverMesh.rotation.x = pDeg * Math.PI / 180;
-                    roverMesh.rotation.z = -rDeg * Math.PI / 180;
-                }
+                roverMesh.rotation.order = 'YXZ';
+                roverMesh.rotation.y = simYaw;
+                roverMesh.rotation.x = currentPitchRad;
+                roverMesh.rotation.z = currentRollRad;
+
+                // Continuously accumulate real-world ToF hits into the persistent 3D map
+                update3DMapFromSensors(simPosX, simPosZ, targetSimYaw, dispL, dispR, usMm);
 
                 // Project Live Rover IMU Coordinates onto HUD
                 if (hudYawEl) {
@@ -1766,6 +2212,54 @@
                 tofRRay.material.color.setHex(isWarn ? 0xef4444 : 0x10b981);
             }
 
+            // 4. Dynamic Voice DOA & HLK-LD2402 Radar Visualizations
+            if (data.doa_deg !== undefined) currentDoaDeg = Number(data.doa_deg);
+            if (data.doa_conf !== undefined) currentDoaConf = Number(data.doa_conf);
+            if (data.radar_pres !== undefined) currentRadarPres = Boolean(data.radar_pres);
+            if (data.radar_mm !== undefined) currentRadarMm = Number(data.radar_mm);
+            if (data.voice_state !== undefined) currentVoiceState = String(data.voice_state);
+
+            const valVoice = document.getElementById('val-voice');
+            if (valVoice) {
+                valVoice.innerText = `${currentDoaDeg >= 0 ? '+' : ''}${currentDoaDeg.toFixed(1)}° (${Math.round(currentDoaConf * 100)}%)`;
+                valVoice.style.color = currentDoaConf > 0.35 ? '#00e5ff' : '#94a3b8';
+            }
+            const valRadar = document.getElementById('val-radar');
+            if (valRadar) {
+                if (currentRadarPres) {
+                    valRadar.innerText = `HUMAN (${(currentRadarMm / 1000).toFixed(2)}m)`;
+                    valRadar.style.color = '#ef4444';
+                } else {
+                    valRadar.innerText = 'CLEAR';
+                    valRadar.style.color = '#10b981';
+                }
+            }
+
+            if (radarTargetMesh && radarConeMesh) {
+                if (currentRadarPres) {
+                    radarTargetMesh.visible = true;
+                    const dM = Math.max(0.15, Math.min(6.0, (currentRadarMm > 0 ? currentRadarMm : 1000) / 1000.0));
+                    radarTargetMesh.position.set(0, 0.06, -0.11 - dM);
+                    radarConeMesh.material.color.setHex(0xef4444);
+                    radarConeMesh.material.opacity = 0.28;
+                } else {
+                    radarTargetMesh.visible = false;
+                    radarConeMesh.material.color.setHex(0xf59e0b);
+                    radarConeMesh.material.opacity = 0.12;
+                }
+            }
+
+            if (doaArrow) {
+                if (currentDoaConf > 0.15) {
+                    doaArrow.visible = true;
+                    const rad = currentDoaDeg * Math.PI / 180.0;
+                    doaArrow.setDirection(new THREE.Vector3(-Math.sin(rad), 0, -Math.cos(rad)).normalize());
+                    doaArrow.setLength(0.45 + currentDoaConf * 0.45, 0.12, 0.08);
+                } else {
+                    doaArrow.visible = false;
+                }
+            }
+
             // Bind Pi 3B+ 5MP Camera & UART Telemetry
             if (data.pi_cam) {
                 updatePiCamTelemetry(data.pi_cam);
@@ -1782,24 +2276,218 @@
             }
         }
 
-        let picamStreamRetryTimer = null;
-        function handlePiCamError(img) {
+        // Pi 3B+ Camera Watchdog & Auto-Reconnect
+        let piCamLastSeen = 0;
+        let piCamLastUartTx = -1;
+        let piCamLastFrameSeq = -1;
+        let piCamLastAdvanceTime = 0;
+        let piCamWasOffline = true;
+        let piCamLastReload = 0;
+        let piCamReconnectInterval = null;
+
+        function reloadPiCamStreams() {
+            const now = Date.now();
+            if (now - piCamLastReload < 1900) return;
+            piCamLastReload = now;
+
+            const cacheBustUrl = (window.piCamStreamUrl ? window.piCamStreamUrl + '?t=' : 'http://192.168.0.108:8081/stream?t=') + now;
+            const img = document.getElementById('picam-stream-img');
             const placeholder = document.getElementById('picam-placeholder');
-            if (placeholder) placeholder.style.display = 'flex';
-            if (img) img.style.display = 'none';
-            if (!picamStreamRetryTimer) {
-                picamStreamRetryTimer = setTimeout(() => {
-                    picamStreamRetryTimer = null;
-                    if (img) {
-                        img.src = 'http://192.168.0.103:8081/stream?t=' + Date.now();
-                    }
-                }, 4000);
+            if (img) {
+                img.style.display = 'block';
+                img.src = cacheBustUrl;
+            }
+            if (placeholder && img && img.naturalWidth > 0) {
+                placeholder.style.display = 'none';
+            }
+            const modal = document.getElementById('fpv-modal');
+            if (modal && modal.style.display === 'flex') {
+                const fpvImg = document.getElementById('fpv-stream-img');
+                if (fpvImg) {
+                    fpvImg.style.display = 'block';
+                    fpvImg.src = cacheBustUrl;
+                }
             }
         }
 
+        let piCamPollBusy = false;
+        let piCamPollFails = 0;
+        let piCamPrevBlobUrl = null;
+        async function piCamPollOnce() {
+            if (piCamPollBusy) return;
+            piCamPollBusy = true;
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 1500);
+            try {
+                const resp = await fetch('/api/pi_cam/snapshot?t=' + Date.now(), { signal: ctrl.signal, cache: 'no-store' });
+                const blob = await resp.blob();
+                if (!resp.ok || blob.size < 500) throw new Error('empty');
+                const url = URL.createObjectURL(blob);
+                const targets = [document.getElementById('picam-stream-img')];
+                const modal = document.getElementById('fpv-modal');
+                if (modal && modal.style.display === 'flex') targets.push(document.getElementById('fpv-stream-img'));
+                targets.forEach(t => { if (t) { t.style.display = 'block'; t.src = url; } });
+                const ph = document.getElementById('picam-placeholder');
+                if (ph) ph.style.display = 'none';
+                if (piCamPrevBlobUrl) setTimeout(u => URL.revokeObjectURL(u), 500, piCamPrevBlobUrl);
+                piCamPrevBlobUrl = url;
+                piCamPollFails = 0;
+            } catch (e) {
+                piCamPollFails++;
+                if (piCamPollFails >= 5) {
+                    const img = document.getElementById('picam-stream-img');
+                    const ph = document.getElementById('picam-placeholder');
+                    if (img) img.style.display = 'none';
+                    if (ph) ph.style.display = 'flex';
+                }
+            } finally {
+                clearTimeout(timer);
+                piCamPollBusy = false;
+            }
+        }
+        setInterval(piCamPollOnce, 80);
+        piCamPollOnce();
+
+        function startPiCamAutoReconnect() {
+            const img = document.getElementById('picam-stream-img');
+            if (img && img.naturalWidth > 0 && !piCamWasOffline) return;
+
+            reloadPiCamStreams();
+            if (piCamReconnectInterval) return;
+            piCamReconnectInterval = setInterval(() => {
+                const img = document.getElementById('picam-stream-img');
+                const isLive = img && img.naturalWidth > 0 && img.style.display !== 'none';
+
+                if (isLive && !piCamWasOffline) {
+                    clearInterval(piCamReconnectInterval);
+                    piCamReconnectInterval = null;
+                    const placeholder = document.getElementById('picam-placeholder');
+                    if (placeholder) placeholder.style.display = 'none';
+                    return;
+                }
+
+                if (img && img.naturalWidth > 0 && !piCamWasOffline) return;
+                reloadPiCamStreams();
+            }, 2000);
+        }
+
+        function handlePiCamError(img) {
+            if (img && img.naturalWidth > 0 && !piCamWasOffline) return;
+            const placeholder = document.getElementById('picam-placeholder');
+            if (placeholder && (!img || img.naturalWidth === 0)) placeholder.style.display = 'flex';
+            if (img && img.naturalWidth === 0) img.style.display = 'none';
+            piCamWasOffline = true;
+            startPiCamAutoReconnect();
+        }
+
+        function togglePiCamFullscreen(e) {
+            if (e) e.stopPropagation();
+            const modal = document.getElementById('fpv-modal');
+            if (!modal) return;
+            const isVisible = modal.style.display === 'flex';
+            modal.style.display = isVisible ? 'none' : 'flex';
+            const fpvImg = document.getElementById('fpv-stream-img');
+            if (!isVisible) {
+                if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+                document.body.focus();
+                if (fpvImg) {
+                    fpvImg.style.display = 'block';
+                    piCamPollOnce();
+                }
+            } else {
+                if (fpvImg) fpvImg.removeAttribute('src');
+            }
+        }
+
+        // Setup image onload handlers
+        window.addEventListener('DOMContentLoaded', () => {
+            const imgs = [
+                document.getElementById('picam-stream-img'),
+                document.getElementById('fpv-stream-img')
+            ].filter(Boolean);
+
+            imgs.forEach(img => {
+                img.onload = () => {
+                    if (img.naturalWidth > 0) {
+                        img.style.display = 'block';
+                        const placeholder = document.getElementById('picam-placeholder');
+                        if (placeholder) placeholder.style.display = 'none';
+                        if (piCamReconnectInterval && !piCamWasOffline) {
+                            clearInterval(piCamReconnectInterval);
+                            piCamReconnectInterval = null;
+                        }
+                    }
+                };
+            });
+        });
+
+        // Background Liveness Watchdog (every 2s)
+        setInterval(() => {
+            const now = Date.now();
+            const img = document.getElementById('picam-stream-img');
+            const placeholder = document.getElementById('picam-placeholder');
+
+            // Fallback status check if telemetry was quiet for > 2s
+            if (now - piCamLastSeen > 2000) {
+                fetch('/api/pi_cam/status')
+                    .then(r => r.ok ? r.json() : null)
+                    .then(data => {
+                        if (data && Object.keys(data).length > 0) {
+                            updatePiCamTelemetry(data);
+                        }
+                    })
+                    .catch(() => {});
+            }
+
+            // Confirm feed liveness if decoding frames
+            if (img && img.naturalWidth > 0 && img.style.display !== 'none') {
+                if (placeholder && !piCamWasOffline) placeholder.style.display = 'none';
+            }
+
+            // If supposed to be online but stream has naturalWidth === 0 or failed silently
+            if (!piCamWasOffline && img && (img.naturalWidth === 0 || img.style.display === 'none')) {
+                startPiCamAutoReconnect();
+            }
+        }, 2000);
+
         function updatePiCamTelemetry(cam) {
             if (!cam) return;
-            const isOnline = !!cam.cam_online || (cam.last_seen && (Date.now() / 1000 - cam.last_seen < 4.0));
+            const now = Date.now();
+            const gap = piCamLastSeen > 0 ? (now - piCamLastSeen) : 0;
+            const isOnline = !!cam.cam_online || (cam.last_seen && (now / 1000 - cam.last_seen < 4.0));
+
+            // Track uart_tx and frame counter progression to detect stalls / recoveries
+            let activityAdvanced = false;
+            if (cam.uart_tx !== undefined && cam.uart_tx !== null) {
+                if (cam.uart_tx !== piCamLastUartTx) {
+                    piCamLastUartTx = cam.uart_tx;
+                    activityAdvanced = true;
+                }
+            }
+            const frameSeq = cam.frame_seq !== undefined ? cam.frame_seq : (cam.frames !== undefined ? cam.frames : -1);
+            if (frameSeq >= 0) {
+                if (frameSeq !== piCamLastFrameSeq) {
+                    piCamLastFrameSeq = frameSeq;
+                    activityAdvanced = true;
+                }
+            }
+
+            // Check for activity stall recovery (stall > 3s followed by new frames/UART TX)
+            const stallGap = piCamLastAdvanceTime > 0 ? (now - piCamLastAdvanceTime) : 0;
+            const recoveredAfterStall = (activityAdvanced && stallGap > 3000 && isOnline);
+            if (activityAdvanced) {
+                piCamLastAdvanceTime = now;
+            }
+
+            // Detect recovery after a >3s gap or stall
+            const recoveredAfterGap = (gap > 3000 && isOnline);
+            const recoveredFromOffline = (piCamWasOffline && isOnline);
+
+            piCamLastSeen = now;
+            if (cam.stream_url) {
+                window.piCamStreamUrl = cam.stream_url;
+            }
+
             const badge = document.getElementById('picam-badge');
             const dot = document.getElementById('picam-status-dot');
             const placeholder = document.getElementById('picam-placeholder');
@@ -1813,10 +2501,27 @@
                 dot.style.background = isOnline ? "#10b981" : "#ef4444";
                 dot.style.boxShadow = isOnline ? "0 0 8px #10b981" : "0 0 8px #ef4444";
             }
-            if (img && placeholder) {
-                if (isOnline && img.style.display === 'none') {
+
+            if (isOnline) {
+                if ((recoveredAfterGap || recoveredFromOffline || recoveredAfterStall) && (!img || img.naturalWidth === 0)) {
+                    if (img) img.style.display = 'block';
+                    if (placeholder) placeholder.style.display = 'none';
+                    startPiCamAutoReconnect();
+                } else if (img && img.naturalWidth > 0) {
                     img.style.display = 'block';
-                    placeholder.style.display = 'none';
+                    if (placeholder) placeholder.style.display = 'none';
+                    if (piCamReconnectInterval) {
+                        clearInterval(piCamReconnectInterval);
+                        piCamReconnectInterval = null;
+                    }
+                }
+                piCamWasOffline = false;
+            } else {
+                piCamWasOffline = true;
+                if (!img || img.naturalWidth === 0) {
+                    if (placeholder) placeholder.style.display = 'flex';
+                    if (img) img.style.display = 'none';
+                    startPiCamAutoReconnect();
                 }
             }
 
@@ -1861,5 +2566,35 @@
         }
     </script>
 
+    <!-- Fullscreen FPV Modal with Autonomous State HUD -->
+    <div id="fpv-modal" style="display: none; position: fixed; inset: 0; z-index: 9999; background: #000; flex-direction: column; align-items: center; justify-content: center;">
+        <div id="fpv-hud-overlay" style="position: absolute; top: 16px; left: 16px; z-index: 10000; display: flex; flex-direction: column; gap: 8px; pointer-events: none;">
+            <div style="display: flex; align-items: center; gap: 10px; background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(8px); padding: 6px 14px; border-radius: 8px; border: 1px solid #334155;">
+                <span style="font-size: 0.75rem; font-weight: bold; color: #94a3b8; letter-spacing: 1px;">AUTONAV:</span>
+                <span id="fpv-autonav-badge" style="background: rgba(0, 255, 136, 0.2); color: #00ff88; border: 1px solid #00ff88; padding: 2px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: bold;">CLEAR CRUISE</span>
+                <span id="fpv-autonav-desc" style="font-size: 0.75rem; color: #cbd5e1; font-family: monospace;">Full corridor clear cruise</span>
+                <span class="badge" style="background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid #38bdf8; font-size: 0.7rem; padding: 2px 8px; border-radius: 4px; font-weight: bold;">MOUNT: FRONT (0°)</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 12px; background: rgba(15, 23, 42, 0.75); padding: 4px 12px; border-radius: 6px; border: 1px solid rgba(51, 65, 85, 0.5); font-family: monospace; font-size: 0.72rem; color: #94a3b8;">
+                <span id="fpv-sensors">US: --cm | L: --cm | R: --cm</span>
+                <span id="fpv-hd">HD: --°</span>
+                <span id="fpv-keys" style="color: #38bdf8;">WASD / ↑↓←→ Drive | Space Stop | Esc Exit</span>
+            </div>
+        </div>
+        <!-- Chassis Centerline Reticle (Camera Mounted Front Center 0° => 50%) -->
+        <div id="fpv-reticle" style="position: absolute; inset: 0; pointer-events: none; z-index: 9999;">
+            <!-- True Chassis Forward Centerline & Optical Axis -->
+            <div style="position: absolute; left: 50%; top: 12%; bottom: 12%; width: 2px; border-left: 2px dashed rgba(0, 255, 136, 0.75); transform: translateX(-50%);"></div>
+            <div style="position: absolute; left: 50%; top: 8%; transform: translateX(-50%); background: rgba(15,23,42,0.85); border: 1px solid #00ff88; color: #00ff88; font-size: 0.68rem; font-family: monospace; font-weight: bold; padding: 2px 6px; border-radius: 4px; white-space: nowrap;">▲ CHASSIS NOSE (0° FWD)</div>
+            <div style="position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 24px; height: 24px; border: 2px solid rgba(0, 255, 136, 0.85); border-radius: 50%;">
+                <div style="position: absolute; left: 50%; top: -6px; bottom: -6px; width: 2px; background: #00ff88; transform: translateX(-50%);"></div>
+                <div style="position: absolute; top: 50%; left: -6px; right: -6px; height: 2px; background: #00ff88; transform: translateY(-50%);"></div>
+            </div>
+        </div>
+        <button onclick="togglePiCamFullscreen(event)" style="position: absolute; top: 16px; right: 16px; z-index: 10000; background: rgba(15,23,42,0.85); border: 1px solid #334155; color: #fff; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: 500;">✕ Close FPV (Esc)</button>
+        <img id="fpv-stream-img" src="" alt="Fullscreen FPV Stream" style="width: 100%; height: 100%; object-fit: contain; display: block;" onerror="handlePiCamError(this)">
+    </div>
+
 </body>
 </html>
+

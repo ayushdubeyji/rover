@@ -3,7 +3,7 @@ import paramiko
 
 HOST = "192.168.0.111"
 USER = "ayush"
-PASS = "REMOVED"
+PASS = os.environ.get("SSH_PASSWORD")
 REMOTE_PKG_DIR = "/home/ayush/mecanum_robot/mecanum_host_ws/src/rover_localization"
 
 ROVER_TELEMETRY_BRIDGE_PY = '''#!/usr/bin/env python3

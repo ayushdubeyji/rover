@@ -10,6 +10,7 @@ import time
 import socket
 import struct
 import asyncio
+import base64
 import threading
 import urllib.request
 from pathlib import Path
@@ -17,7 +18,7 @@ from typing import Set, Dict, Any
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 try:
@@ -26,7 +27,7 @@ try:
     from geometry_msgs.msg import Twist, Vector3, Quaternion
     from sensor_msgs.msg import Imu, MagneticField, Range
     from nav_msgs.msg import Odometry
-    from std_msgs.msg import Int64, Float32, UInt8, String, Int16MultiArray
+    from std_msgs.msg import Int64, Float32, UInt8, String, Int16MultiArray, Bool
 except ImportError:
     Node = object
     rclpy = None
@@ -42,6 +43,7 @@ try:
     )
 except ImportError:
     MODE_FLAG_HOLONOMIC = 1
+    MODE_NAMES = {0: "Normal", 1: "Holonomic", 2: "Auto", 3: "Calibration"}
 try:
     import sentry_sdk
     sentry_sdk.init(
@@ -58,6 +60,21 @@ except Exception as e:
 
 app = FastAPI(title="Mecanum Robot Telemetry Hub")
 
+AUTO_STATES = {
+    0: ("CLEAR CRUISE", "Full corridor clear cruise", "#00ff88"),
+    1: ("THINKING", "Scanning polar histogram & spatial memory", "#ffbb00"),
+    2: ("PLANNING", "Computing optimal VFH+ open heading", "#00d4ff"),
+    3: ("VEER LEFT", "Arcing left around right obstacle", "#38ef7d"),
+    4: ("VEER RIGHT", "Arcing right around left obstacle", "#11998e"),
+    5: ("CREEPING", "Precision narrow corridor crawl (300-480mm)", "#f39c12"),
+    6: ("STUCK ALERT", "Obstacle trap or stall detected", "#e74c3c"),
+    7: ("BACKTRACKING", "Reversing along breadcrumb trail", "#e67e22"),
+    8: ("S-CURVE ESCAPE", "Reversing and curving out of corner trap", "#9b59b6"),
+    9: ("COMPASS PIVOT", "In-place pivot toward open heading", "#3498db"),
+    10: ("WALL FOLLOW", "Parallel contour along obstacle wall", "#1abc9c"),
+    11: ("IMPACT REFLEX", "Emergency reverse-pivot collision reflex", "#ff0055")
+}
+
 # Store connected active WebSockets
 active_connections: Set[WebSocket] = set()
 
@@ -69,6 +86,9 @@ auto_state = "FORWARD"
 auto_target_heading = 0.0
 auto_escape_dir = 1
 auto_state_start_t = 0.0
+
+PI_CAM_IPS = ["192.168.0.103", "192.168.0.108"]
+active_pi_cam_ip = "192.168.0.103"
 
 # Latest cached telemetry
 latest_telemetry: Dict[str, Any] = {
@@ -93,6 +113,11 @@ latest_telemetry: Dict[str, Any] = {
     "virtual_tof_l_mm": 2000,
     "virtual_tof_r_mm": 2000,
     "virtual_front_mm": 2000,
+    "doa_deg": 0.0,
+    "doa_conf": 0.0,
+    "radar_pres": False,
+    "radar_mm": 0,
+    "voice_state": "IDLE_LISTEN",
     "obstacle_dots": [],
     "path_trail": [],
     "mode": 1,
@@ -108,21 +133,28 @@ latest_telemetry: Dict[str, Any] = {
     "m": [0.0, 0.0, 0.0],
     "wheel_speeds": [0, 0, 0, 0],
     "w": [0, 0, 0, 0],
+    "speed": 50,
     "pi_cam": {
         "cam_online": False,
-        "stream_url": "http://192.168.0.103:8081/stream",
+        "stream_url": "http://192.168.0.108:8081/stream",
         "vis_f_mm": 2000,
         "vis_l_mm": 2000,
         "vis_r_mm": 2000,
         "clear_heading_deg": 0.0,
         "fps": 0.0,
+        "frame_seq": 0,
         "uart_tx": 0,
         "uart_rx": 0,
         "cpu_temp_c": 0.0,
         "mem_avail_mb": 0,
         "cpu_usage": 0.0,
         "last_seen": 0.0
-    }
+    },
+    "auto_state_id": 0,
+    "auto_state_name": "CLEAR CRUISE",
+    "auto_state_desc": "Full corridor clear cruise",
+    "auto_state_color": "#00ff88",
+    "auto_target_heading": 0.0
 }
 
 last_udp_packet_time = 0.0
@@ -131,7 +163,7 @@ rover_cmd_seq = 0
 udp_cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 ros_node_bridge = None
 
-def send_rover_drive_packet(vx: float, vy: float, vz: float, speed: int = 70, mode: int = 0, flags: int = 0):
+def send_rover_drive_packet(vx: float, vy: float, vz: float, speed: int = 50, mode: int = 0, flags: int = 0):
     global rover_cmd_seq, last_rover_addr
     rover_cmd_seq = (rover_cmd_seq + 1) & 0xFFFF
     # Map Web Dashboard coordinate convention to Rover kinematics:
@@ -181,6 +213,32 @@ class WebRosBridgeNode(Node if rclpy else object):
             # Wheel ticks & mode
             self.pub_ticks = self.create_publisher(Int64, '/wheel_ticks', 10)
             self.pub_tick_rate = self.create_publisher(Float32, '/tick_rate', 10)
+            self.pub_heading = self.create_publisher(Float32, '/sensors/heading', 10)
+
+            # Voice DOA & HLK-LD2402 Radar subscriptions
+            try:
+                self.sub_doa_az = self.create_subscription(Float32, '/audio/doa_azimuth', self._on_doa_az, 10)
+                self.sub_doa_conf = self.create_subscription(Float32, '/audio/doa_confidence', self._on_doa_conf, 10)
+                self.sub_radar_pres = self.create_subscription(Bool, '/radar/presence', self._on_radar_pres, 10)
+                self.sub_radar_dist = self.create_subscription(Float32, '/radar/distance', self._on_radar_dist, 10)
+                self.sub_voice_state = self.create_subscription(String, '/voice_follower/state', self._on_voice_state, 10)
+            except Exception:
+                pass
+
+    def _on_doa_az(self, msg):
+        latest_telemetry['doa_deg'] = round(float(msg.data), 1)
+
+    def _on_doa_conf(self, msg):
+        latest_telemetry['doa_conf'] = round(float(msg.data), 2)
+
+    def _on_radar_pres(self, msg):
+        latest_telemetry['radar_pres'] = bool(msg.data)
+
+    def _on_radar_dist(self, msg):
+        latest_telemetry['radar_mm'] = int(float(msg.data) * 1000.0)
+
+    def _on_voice_state(self, msg):
+        latest_telemetry['voice_state'] = str(msg.data)
 
     def publish_telemetry(self, t: Dict[str, Any]):
         if not rclpy or not self.pub_odom:
@@ -259,6 +317,12 @@ class WebRosBridgeNode(Node if rclpy else object):
             mag_msg.magnetic_field.z = float(m[2]) * 1e-6
             self.pub_mag.publish(mag_msg)
 
+        # 4. Heading
+        if 'hd' in t:
+            heading_msg = Float32()
+            heading_msg.data = float(t['hd'])
+            self.pub_heading.publish(heading_msg)
+
 
 def update_sensory_memory(rx_m: float, ry_m: float, hd_deg: float, us_mm: int, tof_l_mm: int, tof_r_mm: int):
     global obstacle_memory, path_trail, polar_hist
@@ -280,10 +344,15 @@ def update_sensory_memory(rx_m: float, ry_m: float, hd_deg: float, us_mm: int, t
 
     # 3. Project physical + visual camera hits into world coordinates
     hd_rad = math.radians(hd_deg)
+    # Sensor offsets (sx, sy in meters) and beam angles (rel_ang_deg)
+    # Camera / US: 11 cm from centre at front (0 deg)
+    # ToF: 10 cm from centre at approx 33 deg left/right
+    tof_l_x = 0.100 * math.cos(math.radians(33.0))
+    tof_l_y = 0.100 * math.sin(math.radians(33.0))
     readings = [
-        (us_mm, 0.0),          # Front Center (0 deg)
-        (tof_l_mm, 32.0),      # Front Left (+32 deg)
-        (tof_r_mm, -32.0)      # Front Right (-32 deg)
+        (us_mm, 0.0, 0.110, 0.0),               # Front Center Ultrasonic (0 deg, 11cm)
+        (tof_l_mm, 33.0, tof_l_x, tof_l_y),     # Front Left ToF (+33 deg, 10cm)
+        (tof_r_mm, -33.0, tof_l_x, -tof_l_y)    # Front Right ToF (-33 deg, 10cm)
     ]
 
     pi_cam = latest_telemetry.get("pi_cam", {})
@@ -291,16 +360,18 @@ def update_sensory_memory(rx_m: float, ry_m: float, hd_deg: float, us_mm: int, t
         c_f = pi_cam.get("vis_f_mm", 2000)
         c_l = pi_cam.get("vis_l_mm", 2000)
         c_r = pi_cam.get("vis_r_mm", 2000)
-        if 200 <= c_f <= 1500: readings.append((c_f, 0.0))
-        if 200 <= c_l <= 1500: readings.append((c_l, 32.0))
-        if 200 <= c_r <= 1500: readings.append((c_r, -32.0))
+        # Camera mounted at front 0 deg, 11cm from centre (0° offset)
+        if 200 <= c_l <= 1500: readings.append((c_l, 16.0, 0.110, 0.0))   # Left (+16° cam)
+        if 200 <= c_f <= 1500: readings.append((c_f, 0.0, 0.110, 0.0))    # Center (0° cam)
+        if 200 <= c_r <= 1500: readings.append((c_r, -16.0, 0.110, 0.0))  # Right (-16° cam)
 
-    for d_mm, rel_ang_deg in readings:
+    for d_mm, rel_ang_deg, sx, sy in readings:
         if 25 <= d_mm <= 1500:
             d_m = d_mm / 1000.0
             beam_rad = hd_rad + math.radians(rel_ang_deg)
-            ox = rx_m + d_m * math.cos(beam_rad)
-            oy = ry_m + d_m * math.sin(beam_rad)
+            # Body-frame sensor offset projected into world frame
+            ox = rx_m + (sx * math.cos(hd_rad) - sy * math.sin(hd_rad)) + d_m * math.cos(beam_rad)
+            oy = ry_m + (sx * math.sin(hd_rad) + sy * math.cos(hd_rad)) + d_m * math.sin(beam_rad)
 
             found = False
             for dot in obstacle_memory:
@@ -377,12 +448,15 @@ async def ros2_autonomy_computation_loop():
                     d_l = min(d_l, pi_cam.get("vis_l_mm", 2000))
                     d_r = min(d_r, pi_cam.get("vis_r_mm", 2000))
 
-                is_boxed_in = (d_f < 250) or (d_l < 250 and d_r < 250) or (d_f < 350 and (d_l < 300 or d_r < 300))
+                tof_corroborates = (d_l < 650 or d_r < 650)
+                is_boxed_in = ((d_f < 250 and tof_corroborates) or
+                               (d_l < 250 and d_r < 250) or
+                               (d_f < 350 and tof_corroborates and (d_l < 300 or d_r < 300)))
 
-                base_spd = int(latest_telemetry.get('speed', 60))
+                base_spd = int(latest_telemetry.get('speed', 50))
                 if base_spd <= 0:
-                    base_spd = 60
-                base_spd = max(30, min(100, base_spd))
+                    base_spd = 50
+                base_spd = max(5, min(100, base_spd))
                 spd = base_spd
 
                 if auto_state == "FORWARD":
@@ -413,7 +487,7 @@ async def ros2_autonomy_computation_loop():
                 elif auto_state == "REVERSE_OUT":
                     vx = -0.65
                     vz = 0.0
-                    spd = max(35, min(100, int(base_spd * 1.05)))
+                    spd = max(5, min(100, int(base_spd * 1.05)))
                     if now - auto_state_start_t > 0.75:
                         auto_state = "PIVOT_OUT"
                         auto_state_start_t = now
@@ -424,9 +498,11 @@ async def ros2_autonomy_computation_loop():
                         auto_state = "FORWARD"
                     else:
                         vz = 0.85 * auto_escape_dir
-                        spd = max(35, min(100, base_spd))
+                        spd = max(5, min(100, base_spd))
 
-                send_rover_drive_packet(vx=vx, vy=vy, vz=vz, speed=spd, mode=9)
+                vy = 0.0
+                # Rover core handles onboard assisted driving. Do not broadcast background drive packets to physical rover.
+                latest_telemetry['auto_state_name'] = auto_state
 
         except Exception:
             pass
@@ -449,6 +525,8 @@ def process_rover_payload(payload_str: str, link_label: str = "UDP"):
                 latest_telemetry['tof_r_mm'] = int(parts[4])
                 latest_telemetry['mode'] = int(parts[5])
                 latest_telemetry['mode_name'] = MODE_NAMES.get(int(parts[5]), f"Mode {parts[5]}")
+                if len(parts) >= 7:
+                    latest_telemetry['radar_pres'] = (int(parts[6]) != 0)
                 latest_telemetry['link_type'] = "Pi UART Bridge"
             except Exception:
                 pass
@@ -463,12 +541,13 @@ def process_rover_payload(payload_str: str, link_label: str = "UDP"):
         cam_info = latest_telemetry.setdefault("pi_cam", {})
         cam_info.update({
             "cam_online": bool(t.get("cam_online", False)),
-            "stream_url": "http://192.168.0.103:8081/stream",
+            "stream_url": f"http://{active_pi_cam_ip}:8081/stream",
             "vis_f_mm": int(t.get("vis_f_mm", 2000)),
             "vis_l_mm": int(t.get("vis_l_mm", 2000)),
             "vis_r_mm": int(t.get("vis_r_mm", 2000)),
             "clear_heading_deg": float(t.get("clear_heading_deg", 0.0)),
             "fps": float(t.get("fps", 0.0)),
+            "frame_seq": int(t.get("frame_seq", 0)),
             "uart_tx": int(t.get("uart_tx", 0)),
             "uart_rx": int(t.get("uart_rx", 0)),
             "cpu_temp_c": float(t.get("cpu_temp_c", 0.0)),
@@ -529,6 +608,16 @@ def process_rover_payload(payload_str: str, link_label: str = "UDP"):
         latest_telemetry['mode'] = int(t['mode'])
         latest_telemetry['mode_name'] = MODE_NAMES.get(int(t['mode']), f"Mode {t['mode']}")
 
+    # Autonomous Navigation State extraction
+    if 'as' in t:
+        as_id = int(t['as'])
+        as_info = AUTO_STATES.get(as_id, ("CLEAR CRUISE", "Full corridor clear cruise", "#00ff88"))
+        latest_telemetry['auto_state_id'] = as_id
+        latest_telemetry['auto_state_name'] = as_info[0]
+        latest_telemetry['auto_state_desc'] = as_info[1]
+        latest_telemetry['auto_state_color'] = as_info[2]
+        latest_telemetry['auto_target_heading'] = float(t.get('at', 0.0))
+
     # Strict Onboard Rover IMU Coordinates: Gyroscope, Accelerometer gravity vector, Magnetometer, Quaternion
     if 'q' in t and len(t['q']) >= 4:
         q_floats = [float(v) for v in t['q'][:4]]
@@ -549,6 +638,18 @@ def process_rover_payload(payload_str: str, link_label: str = "UDP"):
         m_floats = [round(float(v), 2) for v in t['m'][:3]]
         latest_telemetry['m'] = m_floats
         latest_telemetry['mag'] = m_floats
+
+    # Voice DOA & HLK-LD2402 Radar telemetry
+    if 'rp' in t or 'radar_pres' in t:
+        latest_telemetry['radar_pres'] = bool(t.get('rp', t.get('radar_pres', False)))
+    if 'rm' in t or 'radar_mm' in t:
+        latest_telemetry['radar_mm'] = int(t.get('rm', t.get('radar_mm', 0)))
+    if 'doa' in t or 'doa_deg' in t:
+        latest_telemetry['doa_deg'] = round(float(t.get('doa', t.get('doa_deg', 0.0))), 1)
+    if 'dc' in t or 'doa_conf' in t:
+        latest_telemetry['doa_conf'] = round(float(t.get('dc', t.get('doa_conf', 0.0))), 2)
+    if 'vs' in t or 'voice_state' in t:
+        latest_telemetry['voice_state'] = str(t.get('vs', t.get('voice_state', 'IDLE_LISTEN')))
 
     # Update Sensory Fusion Memory & Virtual ToF raycasting
     update_sensory_memory(
@@ -612,14 +713,20 @@ async def fallback_http_polling_loop():
 
 async def poll_pi_cam_loop():
     """Background polling loop for Pi 3B+ camera status every 2.0 seconds."""
+    global active_pi_cam_ip
     loop = asyncio.get_event_loop()
     def fetch_status():
-        try:
-            req = urllib.request.Request('http://192.168.0.103:8081/status', headers={'Connection': 'close'})
-            with urllib.request.urlopen(req, timeout=1.2) as r:
-                return r.read().decode('utf-8')
-        except Exception:
-            return None
+        global active_pi_cam_ip
+        candidates = [active_pi_cam_ip] + [ip for ip in PI_CAM_IPS if ip != active_pi_cam_ip]
+        for ip in candidates:
+            try:
+                req = urllib.request.Request(f'http://{ip}:8081/status', headers={'Connection': 'close'})
+                with urllib.request.urlopen(req, timeout=1.2) as r:
+                    active_pi_cam_ip = ip
+                    return r.read().decode('utf-8')
+            except Exception:
+                continue
+        return None
 
     while True:
         try:
@@ -630,12 +737,13 @@ async def poll_pi_cam_loop():
                     cam_info = latest_telemetry.setdefault("pi_cam", {})
                     cam_info.update({
                         "cam_online": bool(data.get("cam_online", False)),
-                        "stream_url": "http://192.168.0.103:8081/stream",
+                        "stream_url": f"http://{active_pi_cam_ip}:8081/stream",
                         "vis_f_mm": int(data.get("vis_f_mm", 2000)),
                         "vis_l_mm": int(data.get("vis_l_mm", 2000)),
                         "vis_r_mm": int(data.get("vis_r_mm", 2000)),
                         "clear_heading_deg": float(data.get("clear_heading_deg", 0.0)),
                         "fps": float(data.get("fps", 0.0)),
+                        "frame_seq": int(data.get("frame_seq", 0)),
                         "uart_tx": int(data.get("uart_tx", 0)),
                         "uart_rx": int(data.get("uart_rx", 0)),
                         "cpu_temp_c": float(data.get("cpu_temp_c", 0.0)),
@@ -645,8 +753,12 @@ async def poll_pi_cam_loop():
                     })
                 except Exception:
                     pass
+            else:
+                cam_info = latest_telemetry.setdefault("pi_cam", {})
+                cam_info["cam_online"] = False
         except Exception:
-            pass
+            cam_info = latest_telemetry.setdefault("pi_cam", {})
+            cam_info["cam_online"] = False
         await asyncio.sleep(2.0)
 
 
@@ -692,6 +804,10 @@ async def get_index():
         return FileResponse(str(index_file))
     return HTMLResponse("<h3>Mecanum Robot Telemetry Server Online</h3>")
 
+@app.get("/api/telemetry")
+async def get_telemetry_snapshot():
+    return JSONResponse(latest_telemetry)
+
 @app.get("/boost")
 @app.get("/boost/boost")
 async def get_boost_dashboard():
@@ -711,6 +827,45 @@ async def get_crawler_video():
 async def get_pi_cam_status():
     """Returns the latest Raspberry Pi camera node telemetry."""
     return latest_telemetry.get("pi_cam", {})
+
+STANDBY_JPEG = bytes([
+    0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x01, 0x00, 0x48,
+    0x00, 0x48, 0x00, 0x00, 0xFF, 0xFE, 0x02, 0x00
+]) + (b'STANDBY ' * 64) + bytes([
+    0xFF, 0xDB, 0x00, 0x43, 0x00, 0x08, 0x06, 0x06, 0x07, 0x06, 0x05, 0x08,
+    0x07, 0x07, 0x07, 0x09, 0x09, 0x08, 0x0A, 0x0C, 0x14, 0x0D, 0x0C, 0x0B, 0x0B, 0x0C, 0x19, 0x12,
+    0x13, 0x0F, 0x14, 0x1D, 0x1A, 0x1F, 0x1E, 0x1D, 0x1A, 0x1C, 0x1C, 0x20, 0x24, 0x2E, 0x27, 0x20,
+    0x22, 0x2C, 0x23, 0x1C, 0x1C, 0x28, 0x37, 0x29, 0x2C, 0x30, 0x31, 0x34, 0x34, 0x34, 0x1F, 0x27,
+    0x39, 0x3D, 0x38, 0x32, 0x3C, 0x2E, 0x33, 0x34, 0x32, 0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01,
+    0x00, 0x01, 0x01, 0x01, 0x11, 0x00, 0xFF, 0xC4, 0x00, 0x1F, 0x00, 0x00, 0x01, 0x05, 0x01, 0x01,
+    0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04,
+    0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F,
+    0x00, 0xBF, 0x80, 0xFF, 0xD9
+])
+
+@app.get("/api/pi_cam/snapshot")
+async def get_pi_cam_snapshot():
+    from fastapi.responses import Response
+    def _fetch():
+        global active_pi_cam_ip
+        candidates = [active_pi_cam_ip] + [ip for ip in PI_CAM_IPS if ip != active_pi_cam_ip]
+        for ip in candidates:
+            try:
+                req = urllib.request.Request(f'http://{ip}:8081/snapshot', headers={'Connection': 'close'})
+                with urllib.request.urlopen(req, timeout=1.5) as r:
+                    active_pi_cam_ip = ip
+                    return r.read()
+            except Exception:
+                continue
+        return None
+    try:
+        data = await asyncio.get_event_loop().run_in_executor(None, _fetch)
+        if not data:
+            return Response(content=STANDBY_JPEG, media_type="image/jpeg", headers={"Cache-Control": "no-store", "X-Camera-Status": "standby"}, status_code=200)
+    except Exception:
+        return Response(content=STANDBY_JPEG, media_type="image/jpeg", headers={"Cache-Control": "no-store", "X-Camera-Status": "standby"}, status_code=200)
+    return Response(content=data, media_type="image/jpeg", headers={"Cache-Control": "no-store", "X-Camera-Status": "live"}, status_code=200)
+
 
 
 @app.websocket("/ws/telemetry")

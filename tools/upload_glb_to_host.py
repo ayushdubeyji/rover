@@ -3,7 +3,7 @@ import os
 
 host = '192.168.0.111'
 user = 'ayush'
-pw = 'REMOVED'
+pw = os.environ.get('SSH_PASSWORD')
 src = r"C:\Users\dell\Desktop\rover\tools\rover_model_optimized.glb"
 dst = "/home/ayush/mecanum_robot/mecanum_host_ws/src/mecanum_robot/web/static/rover_model.glb"
 

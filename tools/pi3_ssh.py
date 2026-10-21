@@ -12,6 +12,8 @@ c.connect(host, username=user, password=pw, timeout=10, allow_agent=False, look_
 stdin, stdout, stderr = c.exec_command(cmd, timeout=30)
 out = stdout.read().decode('utf-8', 'ignore')
 err = stderr.read().decode('utf-8', 'ignore')
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 if out:
     print(out, end='')
 if err:
