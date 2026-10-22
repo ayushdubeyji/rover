@@ -1,4 +1,6 @@
 #include "display_ui.h"
+#include "FreeSerifItalic12pt7b.h"
+#include "FreeSerifItalic9pt7b.h"
 
 #define C_BG      0x0000
 #define C_CARD    0x18E3
@@ -17,6 +19,10 @@
 #define STRIP_Y 156
 
 static const char *MODE_NAMES_REMOTE[MODE_COUNT] = {"NORMAL", "CRAWL", "CRUISE", "SPORT", "FIELD", "HEAD-LOCK", "DRIFT", "ORBIT", "TANK", "AUTO"};
+static const char *AUTO_STATE_WORDS[12] = {
+  "CRUISE", "THINKING", "PLANNING", "AVOID", "AVOID", "CREEP",
+  "STUCK", "REVERSE", "ESCAPE", "PIVOT", "WALL", "REFLEX"
+};
 static const char *AIR_AXIS_NAMES[6] = {"Std (P/R)", "Swap (R/P)", "Inv Pitch", "Inv Roll", "Inv Both", "Swap Inv"};
 static const char *MENU_ITEMS[DisplayUI::MENU_ITEM_COUNT] = {
   "Drive Mode", "Semi-Auto Mode", "Auto Speed", "Crash Protect", "Control Input", "Air Gyro Axis", "Speed Limit", "Deadzone", "Expo Curve",
@@ -194,7 +200,13 @@ void DisplayUI::drawAttitude(const RemoteTelemetry &tm) {
   canvas->setCursor(178, 102); canvas->printf("A %.2fg", sqrtf(tm.acc[0]*tm.acc[0] + tm.acc[1]*tm.acc[1] + tm.acc[2]*tm.acc[2]));
 
   // Inspection hint / status
-  if (fabsf(tm.inspectYaw) > 0.5f) {
+  if (tm.roverMode == MODE_AUTO || tm.semiAuto) {
+    const char *stWord = (tm.autoState < 12) ? AUTO_STATE_WORDS[tm.autoState] : "AUTO";
+    canvas->setTextColor(C_GREEN); canvas->setCursor(4, 144);
+    canvas->printf("AUTO: %s", stWord);
+    canvas->setTextColor(C_CYAN); canvas->setCursor(154, 144);
+    canvas->printf("[%s]", stWord);
+  } else if (fabsf(tm.inspectYaw) > 0.5f) {
     canvas->setTextColor(C_CYAN); canvas->setCursor(34, 144);
     canvas->printf("360 INSPECT: %03.0f (CLICK:0)", tm.inspectYaw);
   } else {
@@ -227,18 +239,20 @@ void DisplayUI::drawMap(const RemoteTelemetry &tm) {
     yaw = (float)tm.roverHeading * DEG_TO_RAD;
   }
 
-  struct RayHit { uint16_t mm; float relAng; uint8_t type; } rays[3] = {
-    {tm.ultraMm, 0.0f, 0},
-    {tm.tofMm[0], 0.5585f, 1},
-    {tm.tofMm[1], -0.5585f, 2}
+  struct RayHit { uint16_t mm; float relAng; uint8_t type; float sx; float sy; } rays[3] = {
+    {tm.ultraMm, 0.0f, 0, 11.0f, 0.0f},
+    {tm.tofMm[0], 0.5760f, 1, 8.39f, 5.45f},   // +33 deg, 10 cm from centre
+    {tm.tofMm[1], -0.5760f, 2, 8.39f, -5.45f}  // -33 deg, 10 cm from centre
   };
 
   for (int i = 0; i < 3; i++) {
     if (rays[i].mm >= 25 && rays[i].mm <= 1500) {
       float distCm = rays[i].mm / 10.0f;
       float hitAng = yaw + rays[i].relAng;
-      float wx = tm.posCm[0] + distCm * cosf(hitAng);
-      float wy = tm.posCm[1] + distCm * sinf(hitAng);
+      float ox = rays[i].sx * cosf(yaw) - rays[i].sy * sinf(yaw);
+      float oy = rays[i].sx * sinf(yaw) + rays[i].sy * cosf(yaw);
+      float wx = tm.posCm[0] + ox + distCm * cosf(hitAng);
+      float wy = tm.posCm[1] + oy + distCm * sinf(hitAng);
 
       // Check for existing nearby hit to deduplicate (6cm clustering)
       bool found = false;
@@ -391,20 +405,24 @@ void DisplayUI::drawDrive(const RemoteTelemetry &tm) {
   canvas->printf("ROLL:  %+5.1f", effR);
 
 
-  // Throttle bar
+  // Throttle bar (measured motion strictly from encoders & IMU, never commanded joystick)
+  float measuredFwd = (tm.wheelMmS[0] + tm.wheelMmS[1] + tm.wheelMmS[2] + tm.wheelMmS[3]) / 4.0f;
+  bool isStationary = !tm.hasTelem || ((tm.calFlags & CAL_STILL) != 0) || (fabsf(measuredFwd) < 2.0f && fabsf(tm.gyro[2]) < 2.0f);
+  int dispY = (isStationary || !tm.hasTelem) ? 0 : constrain((int)(measuredFwd * 100.0f / 500.0f), -100, 100);
+
   canvas->setTextColor(C_MUTED);
   canvas->setCursor(128, 56);
   canvas->print("THROTTLE");
   canvas->setTextColor(C_CYAN);
   canvas->setCursor(188, 56);
-  canvas->printf("%+4d%%", tm.curY);
+  canvas->printf("%+4d%%", dispY);
   canvas->drawRect(128, 66, 104, 7, C_BORDER);
-  int tLen = constrain(abs(tm.curY) * 50 / 100, 0, 50);
-  if (tm.curY > 0) canvas->fillRect(180, 68, tLen, 3, C_GREEN);
-  else if (tm.curY < 0) canvas->fillRect(180 - tLen, 68, tLen, 3, C_CYAN);
+  int tLen = constrain(abs(dispY) * 50 / 100, 0, 50);
+  if (dispY > 0) canvas->fillRect(180, 68, tLen, 3, C_GREEN);
+  else if (dispY < 0) canvas->fillRect(180 - tLen, 68, tLen, 3, C_CYAN);
 
-  // Steering bar
-  int steerVal = (tm.curX != 0) ? tm.curX : tm.curZ;
+  // Steering bar (measured strictly from IMU gyro rotation, never commanded joystick)
+  int steerVal = (isStationary || !tm.hasTelem || fabsf(tm.gyro[2]) <= 2.0f) ? 0 : constrain((int)(tm.gyro[2] * 100.0f / 180.0f), -100, 100);
   canvas->setTextColor(C_MUTED);
   canvas->setCursor(128, 77);
   canvas->print("STEERING");
@@ -529,7 +547,29 @@ void DisplayUI::drawMenu(const RemoteTelemetry &tm) {
       default: break;
     }
   }
+  if (menuIndex == MENU_ITEM_COUNT - 1) {
+    float pulse = 0.5f + 0.5f * sinf(millis() * 0.004f);
+    uint8_t r = 200 + (uint8_t)(55 * pulse), g = 60 + (uint8_t)(60 * pulse), b = 130 + (uint8_t)(60 * pulse);
+    uint16_t rose = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+    canvas->fillRoundRect(14, 40, 212, 84, 10, 0x1002);
+    canvas->drawRoundRect(14, 40, 212, 84, 10, rose);
+    canvas->drawRoundRect(17, 43, 206, 78, 8, C_MUTED);
+    canvas->setFont(&FreeSerifItalic12pt7b);
+    canvas->setTextSize(1);
+    canvas->setTextColor(rose);
+    canvas->setCursor(30, 72);
+    canvas->print("I love you");
+    canvas->setFont(&FreeSerifItalic9pt7b);
+    canvas->setTextColor(C_TEXT);
+    canvas->setCursor(68, 98);
+    canvas->print("Akansha");
+    canvas->setTextColor(rose);
+    canvas->setCursor(104, 116);
+    canvas->print("<3");
+    canvas->setFont();
+  }
 }
+
 
 void DisplayUI::drawStrip(const RemoteTelemetry &tm) {
   static bool stripInited = false;
@@ -543,7 +583,13 @@ void DisplayUI::drawStrip(const RemoteTelemetry &tm) {
   float v = 0;
   for (int i = 0; i < 4; i++) v += abs(tm.wheelMmS[i]) / 4.0f;
   snprintf(buf[0], sizeof buf[0], "SPD %4.2f  BAT %.1fV", v / 1000.0f, tm.vbat);
-  snprintf(buf[1], sizeof buf[1], "HDG %3d  %-8s", tm.roverHeading, MODE_NAMES_REMOTE[tm.roverMode % MODE_COUNT]);
+  bool isAuto = (tm.roverMode == MODE_AUTO || tm.semiAuto);
+  if (isAuto) {
+    const char *stWord = (tm.autoState < 12) ? AUTO_STATE_WORDS[tm.autoState] : "AUTO";
+    snprintf(buf[1], sizeof buf[1], "HDG %3d  %-8s", tm.roverHeading, stWord);
+  } else {
+    snprintf(buf[1], sizeof buf[1], "HDG %3d  %-8s", tm.roverHeading, MODE_NAMES_REMOTE[tm.roverMode % MODE_COUNT]);
+  }
   char usStr[8];
   if (tm.ultraMm > 0) snprintf(usStr, sizeof usStr, "%3dcm", tm.ultraMm / 10);
   else snprintf(usStr, sizeof usStr, " --- ");
@@ -566,6 +612,12 @@ void DisplayUI::drawStrip(const RemoteTelemetry &tm) {
     // High-contrast pure bold white typography on solid black:
     uint16_t rowColor = 0xFFFF; // Pure bold white
     if (i == 0 && tm.vbatPct < 20) rowColor = 0xF800; // Low-battery red warning alert
+    if (i == 1 && isAuto) {
+      if (tm.autoState == 6 || tm.autoState == 11) rowColor = 0xF800; // STUCK / REFLEX
+      else if (tm.autoState == 1 || tm.autoState == 2) rowColor = 0xFFE0; // THINKING / PLANNING
+      else if (tm.autoState == 0) rowColor = 0x07E0; // CRUISE
+      else rowColor = 0x07FF; // AVOID / CREEP / REVERSE / ESCAPE
+    }
 
     tft->setTextColor(rowColor, 0x0000);
     // Bold pass 1
@@ -603,7 +655,7 @@ int DisplayUI::menuSelect(RemoteTelemetry &tm) {
       tm.roverMode = tm.semiAuto ? MODE_AUTO : MODE_TANK;
       return ACT_SEMI_AUTO;
     case 2:
-      tm.autoSpeed = (tm.autoSpeed >= 100) ? 40 : tm.autoSpeed + 5;
+      tm.autoSpeed = (tm.autoSpeed >= 100) ? 5 : tm.autoSpeed + 5;
       return ACT_AUTO_SPEED;
     case 3:
       tm.crashProtect = !tm.crashProtect;
@@ -647,7 +699,7 @@ int DisplayUI::menuAdjust(RemoteTelemetry &tm, int dir) {
       tm.roverMode = tm.semiAuto ? MODE_AUTO : MODE_TANK;
       return ACT_SEMI_AUTO;
     case 2: // Auto Speed
-      tm.autoSpeed = constrain((int)tm.autoSpeed + dir * 5, 40, 100);
+      tm.autoSpeed = constrain((int)tm.autoSpeed + dir * 5, 5, 100);
       return ACT_AUTO_SPEED;
     case 3: // Crash Protect
       tm.crashProtect = (dir > 0);

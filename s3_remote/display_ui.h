@@ -40,8 +40,8 @@ struct RemoteTelemetry {
   float imuYawDeg = 0.0f;      // Rover yaw angle from Rover PKT_TELEM quaternion
 
   // Finer controller tuning parameters
-  uint8_t speedLimit = 60;     // 10% to 100%, 5% steps
-  uint8_t autoSpeed = 70;      // 40% to 100%, 5% steps (Auto Navigation speed)
+  uint8_t speedLimit = 50;     // 10% to 100%, 5% steps
+  uint8_t autoSpeed = 50;      // 5% to 100%, 5% steps (Auto Navigation speed)
   uint8_t deadzonePct = 6;     // 2% to 20%, 2% steps
   uint8_t expoPct = 45;        // 0% (linear) to 90% (high expo), default 45% for smooth low-speed
   int8_t trimFwd = 0;          // -15% to +15%
@@ -68,6 +68,7 @@ struct RemoteTelemetry {
   int16_t wheelMmS[4] = {0, 0, 0, 0};
   float posCm[2] = {0, 0};
   uint8_t calFlags = 0, magCoverage = 0;
+  uint8_t autoState = 0;       // Autonomous Navigation State (0..11)
 };
 
 struct SensorDot {

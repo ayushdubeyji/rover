@@ -27,6 +27,7 @@ float filteredRoll = 0.0f;
 uint8_t targetRoverMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 bool roverLocked = false;
 unsigned long lastAckTime = 0;
+unsigned long modeLockUntil = 0;
 uint16_t packetSeq = 0;
 
 // Joystick calibration & active deflection parameters
@@ -165,6 +166,7 @@ void onEspNowRecv(const uint8_t* mac, const uint8_t* data, int len) {
     for (int i = 0; i < 4; i++) telemetry.wheelMmS[i] = t->wheelMmS[i];
     telemetry.posCm[0] = t->posCm[0]; telemetry.posCm[1] = t->posCm[1];
     telemetry.calFlags = t->calFlags; telemetry.magCoverage = t->magCoverage;
+    telemetry.autoState = (uint8_t)(t->batMv & 0xFF);
     telemetry.hasTelem = true; telemetry.lastTelemMs = millis();
     lastAckTime = millis();
     telemetry.linked = true;
@@ -188,12 +190,25 @@ void onEspNowRecv(const uint8_t* mac, const uint8_t* data, int len) {
 
   lastAckTime = millis();
   telemetry.linked = true;
-  telemetry.roverMode = p->mode;
-  telemetry.semiAuto = (p->mode == MODE_AUTO);
-  telemetry.roverSpeed = p->speed;
-  if (p->flags & FLAG_IMPACT) {
-    haptics.play(FX_ALERT);
+  if (millis() >= modeLockUntil) {
+    telemetry.roverMode = p->mode;
+    telemetry.semiAuto = (p->mode == MODE_AUTO);
   }
+  telemetry.roverSpeed = p->speed;
+  telemetry.autoState = (uint8_t)p->x;
+
+  // Haptics: Buzz ONLY when rover reports impact, edge-triggered, cooldown >= 1.5s
+  static bool prevImpactFlag = false;
+  static unsigned long lastImpactBuzzMs = 0;
+  bool currentImpactFlag = ((p->flags & FLAG_IMPACT) != 0);
+  if (currentImpactFlag && !prevImpactFlag && (millis() - lastImpactBuzzMs >= 1500)) {
+    lastImpactBuzzMs = millis();
+    if (telemetry.hapticsOn) {
+      haptics.play(FX_ALERT);
+    }
+  }
+  prevImpactFlag = currentImpactFlag;
+
   if (telemetry.calFlags & CAL_MAG_OK) {
     telemetry.roverHeading = (int16_t)(((p->arg % 360) + 360) % 360);
   }
@@ -266,9 +281,10 @@ float applyExpo(float val, float expo) {
 // ---------------- Settings Persistence (NVS Preferences) ----------------
 void loadPreferences() {
   if (prefs.begin("s3remote", true)) {
-    telemetry.speedLimit = prefs.getUChar("spd", 60);
-    telemetry.autoSpeed = prefs.getUChar("aspd", 60);
-    if (telemetry.autoSpeed < 30) telemetry.autoSpeed = 60;
+    telemetry.speedLimit = prefs.getUChar("spd", 50);
+    telemetry.autoSpeed = prefs.getUChar("aspd", 50);
+    if (telemetry.autoSpeed < 5 || telemetry.autoSpeed > 100) telemetry.autoSpeed = 50;
+    telemetry.roverMode = prefs.getUChar("rmode", MODE_TANK);
     telemetry.deadzonePct = prefs.getUChar("dead", 6);
     telemetry.expoPct = prefs.getUChar("expo", 45);
     telemetry.airAxis = prefs.getUChar("aax", 0);
@@ -297,6 +313,7 @@ void savePreferences() {
   if (prefs.begin("s3remote", false)) {
     prefs.putUChar("spd", telemetry.speedLimit);
     prefs.putUChar("aspd", telemetry.autoSpeed);
+    prefs.putUChar("rmode", telemetry.roverMode);
     prefs.putUChar("dead", telemetry.deadzonePct);
     prefs.putUChar("expo", telemetry.expoPct);
     prefs.putUChar("aax", telemetry.airAxis);
@@ -323,15 +340,29 @@ void handleMenuAction(int act) {
   switch (act) {
     case ACT_MODE:
     case ACT_SEMI_AUTO:
+      modeLockUntil = millis() + 800;
+      sendPacket(PKT_MODE, 0, 0, 0, 0, 0);
+      haptics.play(FX_CLICK);
+      break;
     case ACT_AUTO_SPEED:
       sendPacket(PKT_MODE, 0, 0, 0, 0, 0);
-      haptics.play(FX_MODE_SWITCH);
+      haptics.play(FX_CLICK);
       break;
     case ACT_CRASH_PROT:
       sendPacket(PKT_MODE, 0, 0, 0, 0, 0);
       haptics.play(FX_CLICK);
       break;
-    case ACT_AIR_AXIS: haptics.play(FX_CLICK); break;
+    case ACT_CTRL:
+    case ACT_AIR_AXIS:
+    case ACT_SPEED:
+    case ACT_DEADZONE:
+    case ACT_EXPO:
+    case ACT_TRIM_FWD:
+    case ACT_TRIM_STR:
+    case ACT_TRIM_YAW:
+    case ACT_GYRO_SMOOTH:
+      haptics.play(FX_CLICK);
+      break;
     case ACT_HAPTICS:
       haptics.enabled = telemetry.hapticsOn;
       if (haptics.enabled) haptics.play(FX_CLICK);
@@ -354,6 +385,10 @@ void handleMenuAction(int act) {
     case ACT_SAVE_SETTINGS: savePreferences(); haptics.play(FX_SUCCESS); break;
     case ACT_EXIT: haptics.play(FX_DOUBLE_CLICK); break;
     default: break;
+  }
+  // Automatically persist any setting modification immediately to NVS Preferences
+  if (act >= ACT_MODE && act <= ACT_ENC_SENS) {
+    savePreferences();
   }
 }
 
@@ -443,9 +478,6 @@ void setup() {
   // Calibrate Joystick Center
   calibrateJoystick();
 
-  // Boot musical fanfare confirmation
-  haptics.play(FX_STARTUP);
-
   Serial.println("[REMOTE] Setup complete. Running main loop.");
 }
 
@@ -462,7 +494,6 @@ void loop() {
   // 1. Check Link Timeout & Auto Channel Hop if Unlinked
   if (telemetry.linked && (now - lastAckTime > 1200)) {
     telemetry.linked = false;
-    haptics.play(FX_ALERT);
   }
   static unsigned long lastChanHop = 0;
   if (!telemetry.linked && (now - lastChanHop > 600)) {
@@ -472,6 +503,30 @@ void loop() {
     esp_wifi_set_promiscuous(true);
     esp_wifi_set_channel(hopCh, WIFI_SECOND_CHAN_NONE);
     esp_wifi_set_promiscuous(false);
+  }
+
+  // Haptics Requirement (b): Obstacle very close (<200mm), hysteresis (>250mm), cooldown >= 1.5s
+  static bool obsCloseActive = false;
+  static unsigned long lastObsBuzzMs = 0;
+  uint16_t minFrontRangeMm = 9999;
+  if (telemetry.ultraMm >= 25 && telemetry.ultraMm < minFrontRangeMm) minFrontRangeMm = telemetry.ultraMm;
+  if (telemetry.tofMm[0] >= 25 && telemetry.tofMm[0] < minFrontRangeMm) minFrontRangeMm = telemetry.tofMm[0];
+  if (telemetry.tofMm[1] >= 25 && telemetry.tofMm[1] < minFrontRangeMm) minFrontRangeMm = telemetry.tofMm[1];
+
+  if (!obsCloseActive) {
+    if (minFrontRangeMm < 200) {
+      obsCloseActive = true;
+      if (now - lastObsBuzzMs >= 1500) {
+        lastObsBuzzMs = now;
+        if (telemetry.hapticsOn) {
+          haptics.play(FX_ALERT);
+        }
+      }
+    }
+  } else {
+    if (minFrontRangeMm > 250) {
+      obsCloseActive = false;
+    }
   }
 
   // 2. Battery Monitoring
@@ -535,9 +590,9 @@ void loop() {
         }
       }
 
-      // Also integrate joystick steering into heading when driving via Joystick without Rover mag
-      if (telemetry.ctrlSource == CTRL_JOYSTICK && abs(telemetry.curZ) > 5 && !(telemetry.calFlags & CAL_MAG_OK)) {
-        localYaw += (telemetry.curZ * 1.2f * DEG_TO_RAD) * dt;
+      // Use measured Rover IMU gyro motion, not commanded joystick deflection, so stiction doesn't rotate the display:
+      if (telemetry.hasTelem && !(telemetry.calFlags & CAL_MAG_OK) && fabsf(telemetry.gyro[2]) > 2.0f) {
+        localYaw += (telemetry.gyro[2] * DEG_TO_RAD) * dt;
       }
       while (localYaw >= 2.0f * (float)M_PI) localYaw -= 2.0f * (float)M_PI;
       while (localYaw < 0.0f) localYaw += 2.0f * (float)M_PI;
@@ -774,8 +829,9 @@ void loop() {
         }
         telemetry.roverMode = nextMode;
         telemetry.semiAuto = (nextMode == MODE_AUTO);
+        modeLockUntil = millis() + 800;
         sendPacket(PKT_MODE, 0, 0, 0, 0, 0);
-        haptics.play(FX_MODE_SWITCH);
+        savePreferences();
         Serial.printf("[REMOTE] Mode switched via Joystick Button to: %d\n", nextMode);
       }
     }
@@ -790,19 +846,7 @@ void loop() {
   static bool lastThrottleState = false;
 
   if (brakeBtn && !lastBrakeState) {
-    haptics.play(FX_BRAKE);
     sendPacket(PKT_STOP, 0, 0, 0, 0, 0); // Immediate dynamic brake stop
-  }
-  if (throttleBtn && !lastThrottleState) {
-    if (telemetry.ctrlSource == CTRL_AIR_REMOTE) {
-      haptics.play(FX_CLUTCH_ENGAGE);
-    } else {
-      haptics.play(FX_THROTTLE_BOOST);
-    }
-  } else if (!throttleBtn && lastThrottleState) {
-    if (telemetry.ctrlSource == CTRL_AIR_REMOTE) {
-      haptics.play(FX_CLUTCH_RELEASE);
-    }
   }
   lastBrakeState = brakeBtn;
   lastThrottleState = throttleBtn;

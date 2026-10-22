@@ -2,7 +2,6 @@
 #include <Arduino_GFX_Library.h>
 #include <math.h>
 #include "car_model.h"
-#include "car_pbr_frames.h"
 
 struct Quat { float w = 1, x = 0, y = 0, z = 0; };
 
@@ -22,69 +21,11 @@ public:
       m_by[i] = (int8_t)pgm_read_byte(&CAR_VERTS[i][1]) / 127.0f;
       m_bz[i] = (int8_t)pgm_read_byte(&CAR_VERTS[i][2]) / 127.0f;
     }
-    for (int i = 0; i < 256; i++) {
-      m_pal[i] = pgm_read_word(&CAR_PBR_PALETTE[i]);
-    }
   }
 
-  // Draw photorealistic PBR textured car frame matching WebGL digital twin
+  // Fallback PBR stub
   void drawPBR(Arduino_GFX *g, int cx, int cy, float yawDeg, float rollDeg = 0.0f, float pitchDeg = 0.0f) {
-    // 36 frames at 10 deg steps (360 / 36 = 10)
-    int fIdx = ((int)roundf(yawDeg / (360.0f / (float)CAR_PBR_FRAME_COUNT)) % CAR_PBR_FRAME_COUNT + CAR_PBR_FRAME_COUNT) % CAR_PBR_FRAME_COUNT;
-    const uint8_t *p = (const uint8_t*)pgm_read_ptr(&CAR_PBR_FRAMES[fIdx]);
-
-    // Natural motion alignment:
-    // Pitch forward (positive) tilts nose down / moves car forward (upwards on screen):
-    int py_off = -(int)(pitchDeg * 0.45f);
-    // Roll right (positive) banks / shifts car rightwards:
-    int px_off = (int)(rollDeg * 0.45f);
-
-    int top_x = cx - (CAR_PBR_FRAME_W / 2) + px_off;
-    int top_y = cy - (CAR_PBR_FRAME_H / 2) + py_off;
-
-    // Drop shadow moves naturally with the vehicle
-    g->fillEllipse(cx + px_off, cy + 30 + py_off, 48, 10, 0x18C3);
-
-    // Direct framebuffer write: eliminates all software trig and drawPixel overhead, achieving full 60 FPS
-    Arduino_Canvas *canvas = (Arduino_Canvas*)g;
-    uint16_t *fb = canvas ? canvas->getFramebuffer() : nullptr;
-
-    for (int y = 0; y < CAR_PBR_FRAME_H; y++) {
-      uint8_t spanCount = pgm_read_byte(p++);
-      int screenY = top_y + y;
-      if (screenY < 15 || screenY >= 155) {
-        for (int s = 0; s < spanCount; s++) { p++; uint8_t l = pgm_read_byte(p++); p += l; }
-        continue;
-      }
-      if (fb) {
-        uint16_t *rowDst = fb + screenY * 240;
-        for (int s = 0; s < spanCount; s++) {
-          uint8_t xStart = pgm_read_byte(p++);
-          uint8_t len = pgm_read_byte(p++);
-          int screenX = top_x + xStart;
-          for (int i = 0; i < len; i++) {
-            uint8_t palIdx = pgm_read_byte(p++);
-            int px = screenX + i;
-            if (px >= 0 && px < 240) {
-              rowDst[px] = m_pal[palIdx];
-            }
-          }
-        }
-      } else {
-        for (int s = 0; s < spanCount; s++) {
-          uint8_t xStart = pgm_read_byte(p++);
-          uint8_t len = pgm_read_byte(p++);
-          int screenX = top_x + xStart;
-          for (int i = 0; i < len; i++) {
-            uint8_t palIdx = pgm_read_byte(p++);
-            int px = screenX + i;
-            if (px >= 0 && px < 240) {
-              g->drawPixel(px, screenY, m_pal[palIdx]);
-            }
-          }
-        }
-      }
-    }
+    (void)g; (void)cx; (void)cy; (void)yawDeg; (void)rollDeg; (void)pitchDeg;
   }
 
   static void rotMatrix(const Quat &q, float m[9]) {
@@ -174,7 +115,6 @@ public:
 
 private:
   float m_bx[CAR_VERT_COUNT], m_by[CAR_VERT_COUNT], m_bz[CAR_VERT_COUNT];
-  uint16_t m_pal[256];
   float vx[CAR_VERT_COUNT], vy[CAR_VERT_COUNT], vd[CAR_VERT_COUNT];
   int16_t sx[CAR_VERT_COUNT], sy[CAR_VERT_COUNT];
   float key[CAR_TRI_COUNT];
