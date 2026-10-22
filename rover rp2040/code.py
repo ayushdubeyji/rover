@@ -18,7 +18,7 @@ motors = [
 invert = [1, 1, 1, 1]
 strafe_sign = 1
 rot_sign = 1
-min_duty = 28500
+min_duty = 38000
 accel = 25.0
 spin_ms = 1400
 
@@ -59,14 +59,14 @@ def drive(i, speed):
         return
     if was_stopped[i]:
         was_stopped[i] = False
-        stiction_kick[i] = 6  # 6 ticks * 10ms = 60ms breakaway kick to break mecanum stiction
+        stiction_kick[i] = 18  # 180ms breakaway kick to break static friction (+40% mass)
     duty = min_duty + int((a - 2.0) / 98.0 * (MAX_DUTY - min_duty))
     if stiction_kick[i] > 0:
         stiction_kick[i] -= 1
-        duty = max(duty, 38000)
-    elif a < 16.0:
-        dither = 1200 if (int(time.monotonic() * 100) % 4 < 2) else -1200
-        duty = clamp(duty + dither, min_duty, MAX_DUTY)
+        duty = max(duty, 52000)  # High-torque breakaway punch to crack +40% mass static friction, then settle
+    elif a < 20.0:
+        dither = 1800 if (int(time.monotonic() * 100) % 4 < 2) else -1800
+        duty = clamp(duty + dither, min_duty + 2000, MAX_DUTY)
     duty = clamp(duty, 0, MAX_DUTY)
     if speed > 0:
         bck.duty_cycle = 0

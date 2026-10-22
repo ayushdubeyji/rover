@@ -24,6 +24,7 @@
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <sys/sysinfo.h>
+#include <poll.h>
 
 // ============================================================================
 // 1. EMBEDDED HIGH-SPEED BASELINE JPEG ENCODER WITH SOLID-BLOCK BYPASS
@@ -531,6 +532,7 @@ struct VisionState {
   std::atomic<uint16_t> vis_r_mm{2000};
   std::atomic<float> clear_heading_deg{0.0f};
   std::atomic<float> fps{0.0f};
+  std::atomic<uint64_t> frame_seq{0};
   std::atomic<uint64_t> uart_tx{0};
   std::atomic<uint64_t> uart_rx{0};
   std::atomic<float> cpu_temp_c{0.0f};
@@ -670,7 +672,7 @@ void uartThreadFunc() {
       char jsonBuf[512];
       int jLen = snprintf(jsonBuf, sizeof(jsonBuf),
         "{\"type\":\"pi_cam\",\"cam_online\":%s,\"vis_f_mm\":%u,\"vis_l_mm\":%u,\"vis_r_mm\":%u,"
-        "\"clear_heading_deg\":%.1f,\"fps\":%.1f,\"uart_tx\":%llu,\"uart_rx\":%llu,"
+        "\"clear_heading_deg\":%.1f,\"fps\":%.1f,\"frame_seq\":%llu,\"uart_tx\":%llu,\"uart_rx\":%llu,"
         "\"cpu_temp_c\":%.1f,\"mem_avail_mb\":%u,\"cpu_usage\":%.1f}\n",
         g_vision.cam_online.load() ? "true" : "false",
         g_vision.vis_f_mm.load(),
@@ -678,6 +680,7 @@ void uartThreadFunc() {
         g_vision.vis_r_mm.load(),
         g_vision.clear_heading_deg.load(),
         g_vision.fps.load(),
+        (unsigned long long)g_vision.frame_seq.load(),
         (unsigned long long)g_vision.uart_tx.load(),
         (unsigned long long)g_vision.uart_rx.load(),
         g_vision.cpu_temp_c.load(),
@@ -771,7 +774,9 @@ void analyzeVisualClearance(const uint8_t* luma, int width, int height) {
   g_vision.vis_f_mm = dC;
   g_vision.vis_r_mm = dR;
 
-  float steer = ((float)dL - (float)dR) * 0.035f;
+  // Camera physically mounted at front center (0° in CCW-positive body frame, 11cm from centre)
+  constexpr float CAM_MOUNT_OFFSET_DEG = 0.0f;
+  float steer = ((float)dL - (float)dR) * 0.035f + CAM_MOUNT_OFFSET_DEG;
   g_vision.clear_heading_deg = std::clamp(steer, -45.0f, 45.0f);
 }
 
@@ -860,12 +865,13 @@ void generateHudFrame(std::vector<uint8_t>& rgbOut, int w, int h, uint64_t frame
     drawString(fb, w, h, x + 70, y, buf, barCol, 1);
   };
 
-  drawBar(20, 254, "LEFT +32", g_vision.vis_l_mm.load(), 0x38bdf8);
-  drawBar(170, 254, "CENTER 0", g_vision.vis_f_mm.load(), 0x10b981);
-  drawBar(320, 254, "RIGHT -32", g_vision.vis_r_mm.load(), 0xa855f7);
+  drawBar(20, 254, "L (+16 L)", g_vision.vis_l_mm.load(), 0x38bdf8);
+  drawBar(170, 254, "C (0 FWD)", g_vision.vis_f_mm.load(), 0x10b981);
+  drawBar(320, 254, "R (-16 R)", g_vision.vis_r_mm.load(), 0xa855f7);
 
   snprintf(buf, sizeof(buf), "Suggested Heading: %+.1f deg", g_vision.clear_heading_deg.load());
   drawString(fb, w, h, 20, 280, buf, 0x38bdf8, 1);
+  drawString(fb, w, h, 330, 280, "MOUNT: FRONT", 0x10b981, 1);
 
   // Bottom Status Line
   fillRect(fb, w, h, 0, 304, w, 16, 0x0c1424);
@@ -913,51 +919,99 @@ void cameraCaptureThreadFunc() {
       g_vision.backend = "libcamera-ov5647";
       g_vision.cam_online = true;
 
-      const char* camCmd = "rpicam-vid -t 0 --inline --codec mjpeg --width 640 --height 480 --framerate 25 --quality 75 -o - 2>/dev/null";
+      const char* camCmd = "rpicam-vid -t 0 --inline --flush --codec mjpeg --width 640 --height 480 --framerate 25 --quality 75 -o - 2>/dev/null";
       FILE* camProc = popen(camCmd, "r");
       if (camProc) {
+        int camFd = fileno(camProc);
         std::vector<uint8_t> curJpeg;
+        curJpeg.reserve(65536);
         int prevByte = -1;
         bool inFrame = false;
+        uint8_t readBuf[16384];
+        auto lastFrameTime = std::chrono::steady_clock::now();
+        bool hasReceivedFirstFrame = false;
 
         while (g_running) {
-          int b = fgetc(camProc);
-          if (b == EOF) break;
+          struct pollfd pfd;
+          pfd.fd = camFd;
+          pfd.events = POLLIN | POLLHUP | POLLERR;
+          pfd.revents = 0;
 
-          if (prevByte == 0xFF && b == 0xD8) {
-            curJpeg.clear();
-            curJpeg.push_back(0xFF);
-            curJpeg.push_back(0xD8);
-            inFrame = true;
-          } else if (inFrame) {
-            curJpeg.push_back((uint8_t)b);
-            if (prevByte == 0xFF && b == 0xD9) {
-              inFrame = false;
-              frameCounter++;
-              framesInWindow++;
+          // 4000ms timeout for initial hardware sensor start, 2000ms watchdog once streaming
+          int pollTimeoutMs = hasReceivedFirstFrame ? 2000 : 4000;
+          int pr = poll(&pfd, 1, pollTimeoutMs);
+          if (pr <= 0) {
+            std::cerr << "[CAMERA] Frame read timed out (>2s stall). Respawning capture pipeline...\n";
+            system("pkill -9 -f rpicam-vid 2>/dev/null");
+            break;
+          }
 
-              {
-                std::lock_guard<std::mutex> lk(g_frame.mtx);
-                g_frame.jpeg = curJpeg;
-                g_frame.seq = frameCounter;
-              }
-              g_frame.cv.notify_all();
+          if (pfd.revents & (POLLHUP | POLLERR)) {
+            std::cerr << "[CAMERA] Pipe hung up or errored. Respawning...\n";
+            system("pkill -9 -f rpicam-vid 2>/dev/null");
+            break;
+          }
 
-              auto now = std::chrono::steady_clock::now();
-              auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - fpsTimer).count();
-              if (ms >= 1000) {
-                g_vision.fps = (framesInWindow * 1000.0f) / ms;
-                framesInWindow = 0;
-                fpsTimer = now;
+          ssize_t bytesRead = read(camFd, readBuf, sizeof(readBuf));
+          if (bytesRead <= 0) {
+            system("pkill -9 -f rpicam-vid 2>/dev/null");
+            break;
+          }
+
+          for (ssize_t i = 0; i < bytesRead; ++i) {
+            uint8_t b = readBuf[i];
+            if (prevByte == 0xFF && b == 0xD8) {
+              curJpeg.clear();
+              curJpeg.push_back(0xFF);
+              curJpeg.push_back(0xD8);
+              inFrame = true;
+            } else if (inFrame) {
+              curJpeg.push_back(b);
+              if (prevByte == 0xFF && b == 0xD9) {
+                inFrame = false;
+                hasReceivedFirstFrame = true;
+                frameCounter++;
+                framesInWindow++;
+                lastFrameTime = std::chrono::steady_clock::now();
+
+                {
+                  std::lock_guard<std::mutex> lk(g_frame.mtx);
+                  g_frame.jpeg = curJpeg;
+                  g_frame.seq = frameCounter;
+                }
+                g_vision.frame_seq = frameCounter;
+                g_frame.cv.notify_all();
+
+                auto now = std::chrono::steady_clock::now();
+                auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - fpsTimer).count();
+                if (ms >= 1000) {
+                  g_vision.fps = (framesInWindow * 1000.0f) / ms;
+                  framesInWindow = 0;
+                  fpsTimer = now;
+                }
               }
             }
+            prevByte = b;
           }
-          prevByte = b;
+
+          // Complete frame watchdog: if incomplete frames stall > 2000ms, respawn
+          auto now = std::chrono::steady_clock::now();
+          auto timeSinceFrame = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastFrameTime).count();
+          if (hasReceivedFirstFrame && timeSinceFrame > 2000) {
+            std::cerr << "[CAMERA] Complete frame delivery stalled (>2s). Respawning capture pipeline...\n";
+            system("pkill -9 -f rpicam-vid 2>/dev/null");
+            break;
+          }
         }
         pclose(camProc);
       }
       g_vision.cam_online = false;
-      std::cout << "[CAMERA] rpicam-vid stopped. Reverting to Live Diagnostic HUD & Auto-Probe...\n";
+      system("pkill -9 -f rpicam-vid 2>/dev/null");
+      std::cout << "[CAMERA] rpicam-vid stopped. Re-probing sensor for immediate respawn...\n";
+      std::this_thread::sleep_for(std::chrono::milliseconds(200));
+      if (probeCsiCameraHardware()) {
+        continue; // Immediately respawn capture pipeline within <2s
+      }
     }
 
     // FALLBACK / CSI UNSEATED HUD MODE (Real-time 20 FPS)
@@ -982,6 +1036,7 @@ void cameraCaptureThreadFunc() {
         g_frame.jpeg = jpegOut;
         g_frame.seq = frameCounter;
       }
+      g_vision.frame_seq = frameCounter;
       g_frame.cv.notify_all();
 
       auto now = std::chrono::steady_clock::now();
@@ -992,7 +1047,7 @@ void cameraCaptureThreadFunc() {
         fpsTimer = now;
       }
 
-      if (std::chrono::duration_cast<std::chrono::seconds>(now - lastProbeTime).count() >= 5) {
+      if (std::chrono::duration_cast<std::chrono::seconds>(now - lastProbeTime).count() >= 2) {
         lastProbeTime = now;
         updateSysMetrics();
         if (probeCsiCameraHardware()) {
@@ -1034,12 +1089,16 @@ void handleHttpClient(int clientSock) {
     }
   }
 
-  if (path == "/stream") {
+  // Strip query string (e.g. ?t=123456789) for clean routing
+  size_t qPos = path.find('?');
+  std::string cleanPath = (qPos != std::string::npos) ? path.substr(0, qPos) : path;
+
+  if (cleanPath == "/stream") {
     g_activeClients++;
     std::string header =
       "HTTP/1.1 200 OK\r\n"
       "Access-Control-Allow-Origin: *\r\n"
-      "Connection: close\r\n"
+      "Connection: keep-alive\r\n"
       "Cache-Control: no-cache, no-store, must-revalidate, pre-check=0, post-check=0, max-age=0\r\n"
       "Pragma: no-cache\r\n"
       "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n";
@@ -1072,7 +1131,7 @@ void handleHttpClient(int clientSock) {
       if (send(clientSock, "\r\n", 2, MSG_NOSIGNAL) < 0) break;
     }
     g_activeClients--;
-  } else if (path == "/snapshot") {
+  } else if (cleanPath == "/snapshot") {
     std::vector<uint8_t> snap;
     {
       std::lock_guard<std::mutex> lk(g_frame.mtx);
@@ -1087,11 +1146,11 @@ void handleHttpClient(int clientSock) {
 
     send(clientSock, header.c_str(), header.length(), MSG_NOSIGNAL);
     if (!snap.empty()) send(clientSock, snap.data(), snap.size(), MSG_NOSIGNAL);
-  } else if (path == "/status" || path == "/api/status") {
+  } else if (cleanPath == "/status" || cleanPath == "/api/status") {
     char jBuf[512];
     int len = snprintf(jBuf, sizeof(jBuf),
       "{\"cam_online\":%s,\"backend\":\"%s\",\"vis_f_mm\":%u,\"vis_l_mm\":%u,\"vis_r_mm\":%u,"
-      "\"clear_heading_deg\":%.1f,\"fps\":%.1f,\"uart_tx\":%llu,\"uart_rx\":%llu,"
+      "\"clear_heading_deg\":%.1f,\"fps\":%.1f,\"frame_seq\":%llu,\"uart_tx\":%llu,\"uart_rx\":%llu,"
       "\"cpu_temp_c\":%.1f,\"mem_avail_mb\":%u,\"cpu_usage\":%.1f}\r\n",
       g_vision.cam_online.load() ? "true" : "false",
       g_vision.backend.c_str(),
@@ -1100,6 +1159,7 @@ void handleHttpClient(int clientSock) {
       g_vision.vis_r_mm.load(),
       g_vision.clear_heading_deg.load(),
       g_vision.fps.load(),
+      (unsigned long long)g_vision.frame_seq.load(),
       (unsigned long long)g_vision.uart_tx.load(),
       (unsigned long long)g_vision.uart_rx.load(),
       g_vision.cpu_temp_c.load(),

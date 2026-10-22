@@ -5,8 +5,6 @@
 #include <Preferences.h>
 #include <esp_now.h>
 #include <Wire.h>
-#include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
 #include "rover_proto.h"
 #include "compass.h"
 #include "fusion.h"
@@ -20,6 +18,7 @@ struct Axis { float v, a; };
 #define PIN_US_ECHO 34      // via 5V->3.3V divider (1k/2k)
 #define PIN_TOF1_XSHUT 26   // front-left
 #define PIN_TOF2_XSHUT 27   // front-right
+#define LD2402_OUT_PIN 35   // HLK-LD2402 24GHz radar hardware presence input (HIGH=Present)
 #define TOF1_ADDR 0x32
 #define TOF2_ADDR 0x33
 // Magnetometer axis remap into body frame (X fwd, Y left, Z up). Adjust after the axis test.
@@ -42,7 +41,6 @@ WebServer server(80);
 Preferences prefs;
 
 // IMU and Magnetometer Sensors
-Adafruit_MPU6050 mpu;
 RoverCompass compass;
 bool imuReady = false;
 bool magReady = false;
@@ -54,11 +52,17 @@ RoverFusion fusion;
 Adafruit_VL53L0X tof1, tof2;
 bool tof1Ready = false, tof2Ready = false;
 float roll = 0, pitch = 0, lastAcc[3] = {0, 0, 1}, lastMag[3] = {0, 0, 0};
+float dynJerk = 0.0f;
 WiFiUDP telemUdp;
 uint16_t ultraMm = 0, tofMm[2] = {0, 0};
 uint16_t camVisMm[3] = {2000, 2000, 2000};
 bool camOnline = false;
 unsigned long lastCamVisMs = 0;
+bool otaInProgress = false;
+bool radarPresence = false;
+uint16_t radarDistanceMm = 0;
+float doaAzimuthDeg = 0.0f;
+float doaConfidence = 0.0f;
 
 void parseVisionLine(const String& line) {
   if (line.startsWith("V,")) {
@@ -76,6 +80,17 @@ void parseVisionLine(const String& line) {
       camVisMm[2] = constrain(v[2], 200, 2000);
       camOnline = (v[3] != 0);
       lastCamVisMs = millis();
+    }
+  }
+  if (line.startsWith("T,")) {
+    int comma1 = line.indexOf(',', 2);
+    if (comma1 > 0) {
+      doaAzimuthDeg = line.substring(2, comma1).toFloat();
+      int comma2 = line.indexOf(',', comma1 + 1);
+      if (comma2 > 0) {
+        doaConfidence = line.substring(comma1 + 1, comma2).toFloat();
+        radarDistanceMm = (uint16_t)line.substring(comma2 + 1).toInt();
+      }
     }
   }
 }
@@ -105,14 +120,22 @@ uint8_t dotHead = 0, dotCount = 0;
 // 12-Sector World-Frame Polar Obstacle Histogram (each sector = 30 deg, -180 to +180)
 float polarHist[12] = {0};
 
-// Autonomous Navigation State Machine
+// Autonomous Navigation State Machine (12 Distinct States)
 enum AutoNavState : uint8_t {
-  AUTO_STATE_FORWARD = 0,
-  AUTO_STATE_REVERSE_OUT,
-  AUTO_STATE_PIVOT_OUT,
-  AUTO_STATE_EVADE_TURN
+  AUTO_CRUISE_CLEAR = 0,
+  AUTO_THINKING_SCAN = 1,
+  AUTO_PLANNING_PATH = 2,
+  AUTO_VEER_LEFT = 3,
+  AUTO_VEER_RIGHT = 4,
+  AUTO_CAUTIOUS_CREEP = 5,
+  AUTO_STUCK_DETECTED = 6,
+  AUTO_REVERSE_BACKTRACK = 7,
+  AUTO_SCURVE_ESCAPE = 8,
+  AUTO_COMPASS_PIVOT = 9,
+  AUTO_WALL_FOLLOW = 10,
+  AUTO_IMPACT_REFLEX = 11
 };
-AutoNavState autoState = AUTO_STATE_FORWARD;
+AutoNavState autoState = AUTO_CRUISE_CLEAR;
 unsigned long autoStateUntil = 0, autoStateStart = 0;
 float autoTargetHeading = 0.0f;
 int autoEscapeDir = 1;
@@ -129,14 +152,14 @@ void IRAM_ATTR usEchoISR() {
   } else {
     if (usEchoStartUs > 0) {
       uint32_t w = micros() - usEchoStartUs;
-      if (w >= 100) {
-        if (w <= 18000) { // ~20mm to 3080mm
+      if (w >= 85) {
+        if (w <= 24000) { // ~15mm to 4100mm
           usPulseWidthUs = w;
           usNewData = true;
         }
         usEchoStartUs = 0;
       }
-      // If w < 100 us, rising-edge ringing noise: ignore and do NOT clear usEchoStartUs!
+      // If w < 85 us, rising-edge ringing noise: ignore and do NOT clear usEchoStartUs!
     }
   }
 }
@@ -148,7 +171,7 @@ unsigned long lastImpactTime = 0;
 
 // RP2040 motor config
 int inv[4] = {0, 0, 0, 0};
-int strafeInv = 0, rotInv = 0, minDuty = 25000, spinMs = 1400, accelStep = 25;
+int strafeInv = 0, rotInv = 0, minDuty = 40000, spinMs = 1650, accelStep = 25;
 // Drive tuning
 int crawlPct = 35, cruisePct = 50, accelRate = 250, jerkRate = 1500, trimF = 0, trimS = 0;
 
@@ -202,8 +225,8 @@ void loadCfg() {
   for (int i = 0; i < 4; i++) inv[i] = prefs.getInt(("i" + String(i)).c_str(), 0);
   strafeInv = prefs.getInt("si", 0);
   rotInv = prefs.getInt("ri", 0);
-  minDuty = prefs.getInt("md", 34000);
-  spinMs = prefs.getInt("sp", 1400);
+  minDuty = prefs.getInt("md", 40000);
+  spinMs = prefs.getInt("sp", 1650);
   accelStep = prefs.getInt("ac", 25);
   if (accelStep < 20) accelStep = 25;
   crawlPct = prefs.getInt("cp", 35);
@@ -216,8 +239,8 @@ void loadCfg() {
   crashProt = prefs.getBool("cprot", true);
   prefs.end();
 
-  if (minDuty < 34000) {
-    minDuty = 34000;
+  if (minDuty < 40000) {
+    minDuty = 40000;
     saveCfg();
   }
   sendCfg();
@@ -263,6 +286,10 @@ float expo(float v, float e) { return (1 - e) * v + e * v * v * v; }
 
 // Jerk-limited (S-curve) profile: velocity approaches target with bounded accel and jerk.
 void profile(Axis& s, float target, float amax, float jmax, float dt) {
+  if (fabsf(target) < fabsf(s.v) || (target * s.v < 0.0f)) {
+    amax *= 2.8f;
+    jmax *= 3.5f;
+  }
   float err = target - s.v;
   float aDes = (err > 0 ? 1 : -1) * min(amax, sqrtf(2 * jmax * fabsf(err)));
   float da = aDes - s.a;
@@ -274,11 +301,24 @@ void profile(Axis& s, float target, float amax, float jmax, float dt) {
 }
 
 void getSensorRanges(uint16_t &dF, uint16_t &dL, uint16_t &dR) {
-  dF = (ultraMm >= 25 && ultraMm <= 2000) ? ultraMm : 2000;
-  dL = (tofMm[0] >= 25 && tofMm[0] <= 2000) ? tofMm[0] : 2000; // +32 deg Front-Left
-  dR = (tofMm[1] >= 25 && tofMm[1] <= 2000) ? tofMm[1] : 2000; // -32 deg Front-Right
+  dL = (tofMm[0] >= 25 && tofMm[0] <= 2000) ? tofMm[0] : 2000; // +33 deg Front-Left (10cm from centre)
+  dR = (tofMm[1] >= 25 && tofMm[1] <= 2000) ? tofMm[1] : 2000; // -33 deg Front-Right (10cm from centre)
 
-  // Fuse camera visual obstacle ranges if online and fresh (< 1000ms)
+  // Demote unreliable front ultrasonic:
+  // If ultrasonic reads close (< 450mm), strictly require corroboration from ToF.
+  // When uncorroborated (phantom acoustic reflection), ignore (2000mm)
+  // so ultrasonic ALONE cannot trigger emergency stops or auto planning halts.
+  uint16_t u = (ultraMm >= 25 && ultraMm <= 2000) ? ultraMm : 2000;
+  bool tofCorroborates = (dL < 650 || dR < 650);
+  if (u < 450 && !tofCorroborates) {
+    u = 2000; // Ignore uncorroborated reflection; cannot stop or pause rover alone
+  }
+  dF = u;
+
+  // Fuse camera visual obstacle ranges mounted straight at front center (0° offset, 11cm from centre):
+  // camVisMm[0] (Center-FOV 0° cam) = 0° chassis frame (front center)
+  // camVisMm[1] (Left-FOV +16° cam) = +16° chassis frame (fwd-left)
+  // camVisMm[2] (Right-FOV -16° cam) = -16° chassis frame (fwd-right)
   if (camOnline && (millis() - lastCamVisMs < 1000)) {
     if (camVisMm[0] < dF) dF = camVisMm[0];
     if (camVisMm[1] < dL) dL = camVisMm[1];
@@ -302,8 +342,8 @@ void getSensorRanges(uint16_t &dF, uint16_t &dL, uint16_t &dR) {
 
       uint16_t dMm = (uint16_t)(distCm * 10.0f);
       if (fabsf(relAng) <= 16.0f && dMm < virtF) virtF = dMm;
-      if (fabsf(relAng - 32.0f) <= 18.0f && dMm < virtL) virtL = dMm;
-      if (fabsf(relAng - (-32.0f)) <= 18.0f && dMm < virtR) virtR = dMm;
+      if (fabsf(relAng - 33.0f) <= 18.0f && dMm < virtL) virtL = dMm;
+      if (fabsf(relAng - (-33.0f)) <= 18.0f && dMm < virtR) virtR = dMm;
     }
     if (dF >= 2000 && virtF < 2000) dF = virtF;
     if (dL >= 2000 && virtL < 2000) dL = virtL;
@@ -316,32 +356,48 @@ void updateSensoryFusion() {
   for (int i = 0; i < 12; i++) polarHist[i] *= 0.985f;
 
   // 2. Project obstacle hits into 2D world coordinates & update polar histogram using physical + visual readings
+  // Incorporate physical sensor mount offsets in body frame (cm):
+  // US & Camera: 11cm from centre at front (0 deg)
+  // ToF: 10cm from centre at approx 33 deg left/right (x = 10*cos(33) = 8.39cm, y = 10*sin(33) = 5.45cm)
   uint16_t pF = (ultraMm >= 25 && ultraMm <= 2000) ? ultraMm : 2000;
   uint16_t pL = (tofMm[0] >= 25 && tofMm[0] <= 2000) ? tofMm[0] : 2000;
   uint16_t pR = (tofMm[1] >= 25 && tofMm[1] <= 2000) ? tofMm[1] : 2000;
 
-  if (camOnline && (millis() - lastCamVisMs < 1000)) {
-    if (camVisMm[0] < pF) pF = camVisMm[0];
-    if (camVisMm[1] < pL) pL = camVisMm[1];
-    if (camVisMm[2] < pR) pR = camVisMm[2];
+  // Demote uncorroborated ultrasonic hits from polluting polar obstacle histogram
+  if (pF < 450 && !(pL < 650 || pR < 650)) {
+    pF = 2000; // Ignore spurious ultrasonic reflection in map projection
   }
 
   struct HitCandidate {
     uint16_t distMm;
     float relAngDeg;
-  } hits[3] = {
-    {pF, 0.0f},
-    {pL, 32.0f},
-    {pR, -32.0f}
-  };
+    float sxCm;
+    float syCm;
+  } hits[6];
+  int hitCount = 3;
+  hits[0] = {pF, 0.0f, 11.0f, 0.0f};       // 0° Ultrasonic Front (11cm)
+  hits[1] = {pL, 33.0f, 8.39f, 5.45f};     // +33° ToF Left (10cm)
+  hits[2] = {pR, -33.0f, 8.39f, -5.45f};   // -33° ToF Right (10cm)
 
-  for (int i = 0; i < 3; i++) {
+  if (camOnline && (millis() - lastCamVisMs < 1000)) {
+    hits[3] = {camVisMm[1], 16.0f, 11.0f, 0.0f};   // Left-FOV: +16° chassis frame
+    hits[4] = {camVisMm[0], 0.0f, 11.0f, 0.0f};    // Center-FOV: 0° chassis frame (front center)
+    hits[5] = {camVisMm[2], -16.0f, 11.0f, 0.0f};  // Right-FOV: -16° chassis frame
+    hitCount = 6;
+  }
+
+  float hdRad = heading * DEG_TO_RAD;
+  float cosHd = cosf(hdRad), sinHd = sinf(hdRad);
+
+  for (int i = 0; i < hitCount; i++) {
     if (hits[i].distMm >= 25 && hits[i].distMm <= 1500) {
       float totalAngDeg = heading + hits[i].relAngDeg;
       float rad = totalAngDeg * DEG_TO_RAD;
       float hitDistCm = hits[i].distMm / 10.0f;
-      float hx = odomX + hitDistCm * cosf(rad);
-      float hy = odomY + hitDistCm * sinf(rad);
+      float sox = hits[i].sxCm * cosHd - hits[i].syCm * sinHd;
+      float soy = hits[i].sxCm * sinHd + hits[i].syCm * cosHd;
+      float hx = odomX + sox + hitDistCm * cosf(rad);
+      float hy = odomY + soy + hitDistCm * sinf(rad);
 
       bool dup = false;
       for (uint8_t d = 0; d < dotCount; d++) {
@@ -366,8 +422,8 @@ void updateSensoryFusion() {
 }
 
 void runAutonomousTank(float &x, float &y, float &z, int &spd, float &amax, float &jmax) {
-  // Respect user-configured speed limit from settings (supports low-speed autonomous crawl down to 30%)
-  spd = constrain(spd, 30, 100);
+  // Respect user-configured speed limit from settings (supports low-speed autonomous crawl down to 5%)
+  spd = constrain(spd, 5, 100);
   amax = 3.2f;
   jmax = 20.0f;
 
@@ -376,8 +432,15 @@ void runAutonomousTank(float &x, float &y, float &z, int &spd, float &amax, floa
     return;
   }
 
-  // Operator stick deflection override in Semi-Auto mode
-  if (fabsf(x) > 0.10f || fabsf(y) > 0.10f || fabsf(z) > 0.10f) {
+  // Idle with zero joystick input must give zero motor output
+  if (fabsf(x) < 0.08f && fabsf(y) < 0.08f && fabsf(z) < 0.08f) {
+    x = 0.0f; y = 0.0f; z = 0.0f;
+    autoState = AUTO_CRUISE_CLEAR;
+    return;
+  }
+
+  // Operator manual override: reverse stick or intentional lateral steering overrides autonomy
+  if (y < -0.08f || fabsf(x) > 0.15f || fabsf(z) > 0.15f) {
     if (fabsf(x) > fabsf(z)) z = x;
     x = 0.0f;
     y = constrain(y, -0.70f, 0.70f);
@@ -388,14 +451,25 @@ void runAutonomousTank(float &x, float &y, float &z, int &spd, float &amax, floa
   uint16_t dF, dL, dR;
   getSensorRanges(dF, dL, dR);
 
-  const uint16_t STOP_F = 300, STOP_T = 260;
-  const uint16_t WARN_F = 700, WARN_T = 620;
-
   unsigned long now = millis();
 
+  // --- Priority 1: MPU6050 Impact / Collision Reflex (State 11) --- Only if vehicle was advancing
+  if (now < impactUntil && impactDir == IMPACT_FRONT && y > 0.0f && autoState != AUTO_IMPACT_REFLEX) {
+    autoState = AUTO_IMPACT_REFLEX;
+    autoStateStart = now;
+    autoStateUntil = now + 500;
+    autoPhaseSwitched = true;
+  }
+
   // --- Stuck-Zone & Trap Detection ---
+  uint16_t inertiaLeadMm = (uint16_t)(fabsf(ax[1].v) * spd * 1.4f);
+  uint16_t STOP_F = 350 + inertiaLeadMm;
+  uint16_t STOP_T = 300 + inertiaLeadMm;
+  uint16_t WARN_F = 800;
+  uint16_t WARN_T = 700;
+
   // a) Boxed-In / Close Front Obstacles
-  bool isBoxedIn = (dF < 240) || (dL < 240 && dR < 240) || (dF < 340 && (dL < 280 || dR < 280));
+  bool isBoxedIn = (dF < STOP_F - 60) || (dL < STOP_T - 50 && dR < STOP_T - 50) || (dF < STOP_F && (dL < STOP_T || dR < STOP_T));
 
   // b) Corner Oscillation / Repeated Turn Trap (3 turns within 6s or <12cm progress in 3.0s)
   static unsigned long escapeTurnTimes[3] = {0, 0, 0};
@@ -416,7 +490,7 @@ void runAutonomousTank(float &x, float &y, float &z, int &spd, float &amax, floa
     checkOdomY = odomY;
   }
 
-  // c) Sensor Range Stall (Commanded |y| > 0.4 for > 900ms while sensors unchanged)
+  // c) Sensor Range Stall (Commanded |y| > 0.35 for > 900ms while sensors unchanged)
   static unsigned long stallStartMs = 0;
   static uint16_t prevDF = 0, prevDL = 0, prevDR = 0;
   bool isStall = false;
@@ -430,116 +504,236 @@ void runAutonomousTank(float &x, float &y, float &z, int &spd, float &amax, floa
   } else {
     stallStartMs = 0; prevDF = dF; prevDL = dL; prevDR = dR;
   }
-  bool isImpactStall = (now < impactUntil && impactDir != IMPACT_NONE);
 
-  // Trigger Stuck-Zone Multi-Stage Reverse Backtrack
-  if ((isBoxedIn || isOscillationTrap || isStall || isImpactStall) && autoState == AUTO_STATE_FORWARD) {
+  // Trigger Stuck-Zone Alert State when in forward/cruising/contour states
+  bool inForwardState = (autoState == AUTO_CRUISE_CLEAR || autoState == AUTO_THINKING_SCAN ||
+                         autoState == AUTO_CAUTIOUS_CREEP || autoState == AUTO_VEER_LEFT ||
+                         autoState == AUTO_VEER_RIGHT || autoState == AUTO_WALL_FOLLOW);
+
+  if ((isBoxedIn || isOscillationTrap || isStall) && inForwardState) {
     escapeTurnTimes[escapeTurnIdx] = now;
     escapeTurnIdx = (escapeTurnIdx + 1) % 3;
-
-    // VFH+ World Polar Histogram + Path Repulsion Sector Search
-    int bestSector = -1;
-    float bestCost = 999999.0f;
-    for (int s = 0; s < 12; s++) {
-      float sectorAng = -180.0f + s * 30.0f + 15.0f;
-      float diffFromCurrent = fabsf(wrapDeg(sectorAng - heading));
-      float cost = polarHist[s];
-      // Require wide pivot (at least 60 deg away from trapped heading)
-      if (diffFromCurrent < 60.0f) cost += 15.0f;
-      // Visited-path repulsion from last 12 breadcrumbs
-      for (int k = 0; k < min((int)pathHistCount, 12); k++) {
-        int pIdx = (pathHistHead - 1 - k + 64) % 64;
-        float bDx = pathHist[pIdx].x - odomX;
-        float bDy = pathHist[pIdx].y - odomY;
-        float bDist = sqrtf(bDx * bDx + bDy * bDy);
-        if (bDist > 2.0f && bDist < 50.0f) {
-          float bAng = atan2f(bDy, bDx) * RAD_TO_DEG;
-          float bDiff = fabsf(wrapDeg(sectorAng - bAng));
-          if (bDiff < 45.0f) cost += (50.0f - bDist) * 0.20f;
-        }
-      }
-      if (cost < bestCost) {
-        bestCost = cost;
-        bestSector = s;
-      }
-    }
-    autoTargetHeading = -180.0f + bestSector * 30.0f + 15.0f;
-    autoEscapeDir = (wrapDeg(autoTargetHeading - heading) >= 0.0f) ? 1 : -1;
-
-    autoState = AUTO_STATE_REVERSE_OUT;
+    autoState = AUTO_STUCK_DETECTED;
     autoStateStart = now;
-    autoStateUntil = now + 900; // 750ms to 1000ms
+    autoStateUntil = now + 180;
     autoPhaseSwitched = true;
   }
 
-  // --- State Machine Execution ---
+  // --- 12-State Navigation Execution ---
   x = 0.0f; // Pure tank kinematics
 
   switch (autoState) {
-    case AUTO_STATE_REVERSE_OUT: {
-      // Phase 1: Drive backward along breadcrumb vector with boosted torque
-      y = -0.82f;
-      z = -0.25f * autoEscapeDir;
-      spd = min(100, (int)lroundf(spd * 1.10f));
-      bool clearanceOpen = (now - autoStateStart >= 600) && (dF > 420 && dL > 340 && dR > 340);
-      if (now >= autoStateUntil || clearanceOpen) {
-        autoState = AUTO_STATE_PIVOT_OUT;
+    case AUTO_CRUISE_CLEAR: { // State 0: Full corridor clear cruise
+      if (dF < WARN_F || dL < WARN_T || dR < WARN_T) {
+        autoState = AUTO_THINKING_SCAN;
         autoStateStart = now;
-        autoStateUntil = now + 750; // 550ms to 800ms
+        autoStateUntil = now + 180;
         autoPhaseSwitched = true;
-      }
-      break;
-    }
-
-    case AUTO_STATE_PIVOT_OUT: {
-      // Phase 2: Compass-Locked Wide Pivot toward lowest-cost open sector
-      y = 0.0f;
-      z = 0.88f * autoEscapeDir;
-      spd = min(100, (int)lroundf(spd * 1.05f));
-      float hErr = wrapDeg(autoTargetHeading - heading);
-      if (fabsf(hErr) < 12.0f || now >= autoStateUntil) {
-        autoState = AUTO_STATE_FORWARD;
+        y = 0.25f; z = 0.0f;
+      } else if ((dL < 380 && dR >= 450) || (dR < 380 && dL >= 450)) {
+        autoState = AUTO_WALL_FOLLOW;
         autoPhaseSwitched = true;
-      }
-      break;
-    }
-
-    case AUTO_STATE_EVADE_TURN: {
-      // Gentle obstacle evasion pivot
-      y = (dF < 180) ? -0.75f : 0.0f;
-      z = 0.85f * autoEscapeDir;
-      if (now >= autoStateUntil || (dF > 380 && dL > 320 && dR > 320)) {
-        autoState = AUTO_STATE_FORWARD;
-        autoPhaseSwitched = true;
-      }
-      break;
-    }
-
-    case AUTO_STATE_FORWARD:
-    default: {
-      if (dF < STOP_F || dL < STOP_T || dR < STOP_T) {
-        autoState = AUTO_STATE_EVADE_TURN;
-        autoEscapeDir = (dR >= dL) ? 1 : -1;
-        autoStateStart = now;
-        autoStateUntil = now + 420;
-        autoPhaseSwitched = true;
-        y = (dF < 180) ? -0.75f : 0.0f;
-        z = 0.85f * autoEscapeDir;
       } else {
-        float effF = min((float)dF, min((float)dL, (float)dR) * 0.848f);
-        float fwdNorm = constrain((effF - STOP_F) / (float)(WARN_F - STOP_F), 0.0f, 1.0f);
-        y = 0.82f + 0.18f * fwdNorm; // 82% to 100% of spd
-
-        // Repulsive steering from Left and Right sensors
-        float repL = constrain((float)(WARN_T - dL) / (float)(WARN_T - STOP_T), 0.0f, 1.0f);
-        float repR = constrain((float)(WARN_T - dR) / (float)(WARN_T - STOP_T), 0.0f, 1.0f);
-        float repF = constrain((float)(WARN_F - dF) / (float)(WARN_F - STOP_F), 0.0f, 1.0f) * ((dR >= dL) ? 0.45f : -0.45f);
-
-        z = constrain((repL - repR) * 0.70f + repF, -0.65f, 0.65f);
-        y *= (1.0f - 0.20f * fabsf(z));
+        y = 0.95f; z = 0.0f;
       }
       break;
     }
+
+    case AUTO_THINKING_SCAN: { // State 1: Brief 180ms pause/slowdown evaluating polar histogram
+      y = 0.20f;
+      z = 0.0f;
+      if (now >= autoStateUntil) {
+        if (dF < STOP_F) {
+          autoState = AUTO_PLANNING_PATH;
+          autoPhaseSwitched = true;
+        } else if (dF <= WARN_F && (dL < WARN_T || dR < WARN_T)) {
+          autoState = AUTO_CAUTIOUS_CREEP;
+          autoPhaseSwitched = true;
+        } else if (dR < dL && dR < WARN_T) {
+          autoState = AUTO_VEER_LEFT;
+          autoPhaseSwitched = true;
+        } else if (dL <= dR && dL < WARN_T) {
+          autoState = AUTO_VEER_RIGHT;
+          autoPhaseSwitched = true;
+        } else {
+          autoState = AUTO_CRUISE_CLEAR;
+          autoPhaseSwitched = true;
+        }
+      }
+      break;
+    }
+
+    case AUTO_PLANNING_PATH: { // State 2: Select lowest-cost VFH+ sector & set autoTargetHeading
+      y = 0.0f; z = 0.0f;
+      int bestSector = -1;
+      float bestCost = 999999.0f;
+      for (int s = 0; s < 12; s++) {
+        float sectorAng = -180.0f + s * 30.0f + 15.0f;
+        float diffFromCurrent = fabsf(wrapDeg(sectorAng - heading));
+        float cost = polarHist[s];
+        if (diffFromCurrent < 60.0f) cost += 15.0f;
+        for (int k = 0; k < min((int)pathHistCount, 12); k++) {
+          int pIdx = (pathHistHead - 1 - k + 64) % 64;
+          float bDx = pathHist[pIdx].x - odomX;
+          float bDy = pathHist[pIdx].y - odomY;
+          float bDist = sqrtf(bDx * bDx + bDy * bDy);
+          if (bDist > 2.0f && bDist < 50.0f) {
+            float bAng = atan2f(bDy, bDx) * RAD_TO_DEG;
+            float bDiff = fabsf(wrapDeg(sectorAng - bAng));
+            if (bDiff < 45.0f) cost += (50.0f - bDist) * 0.20f;
+          }
+        }
+        if (cost < bestCost) {
+          bestCost = cost;
+          bestSector = s;
+        }
+      }
+      autoTargetHeading = -180.0f + bestSector * 30.0f + 15.0f;
+      autoEscapeDir = (wrapDeg(autoTargetHeading - heading) >= 0.0f) ? 1 : -1;
+      autoState = AUTO_COMPASS_PIVOT;
+      autoStateStart = now;
+      autoStateUntil = now + 1200;
+      autoPhaseSwitched = true;
+      break;
+    }
+
+    case AUTO_VEER_LEFT: { // State 3: Proportional left arc around right-side obstacle
+      float repR = constrain((float)(600 - dR) / 350.0f, 0.25f, 0.85f);
+      z = repR;
+      y = 0.72f * (1.0f - 0.25f * fabsf(z));
+      if (dR > 550 && dF > 550) {
+        autoState = AUTO_CRUISE_CLEAR;
+        autoPhaseSwitched = true;
+      } else if (dF < 280) {
+        autoState = AUTO_THINKING_SCAN;
+        autoStateStart = now;
+        autoStateUntil = now + 180;
+        autoPhaseSwitched = true;
+      }
+      break;
+    }
+
+    case AUTO_VEER_RIGHT: { // State 4: Proportional right arc around left-side obstacle
+      float repL = constrain((float)(600 - dL) / 350.0f, 0.25f, 0.85f);
+      z = -repL;
+      y = 0.72f * (1.0f - 0.25f * fabsf(z));
+      if (dL > 550 && dF > 550) {
+        autoState = AUTO_CRUISE_CLEAR;
+        autoPhaseSwitched = true;
+      } else if (dF < 280) {
+        autoState = AUTO_THINKING_SCAN;
+        autoStateStart = now;
+        autoStateUntil = now + 180;
+        autoPhaseSwitched = true;
+      }
+      break;
+    }
+
+    case AUTO_CAUTIOUS_CREEP: { // State 5: Slow precision creep in narrow corridor 300..480mm
+      y = 0.45f;
+      z = constrain(((float)dL - (float)dR) / 400.0f, -0.40f, 0.40f);
+      spd = max(5, (int)(spd * 0.70f));
+      if (dF > 550 && dL > 450 && dR > 450) {
+        autoState = AUTO_CRUISE_CLEAR;
+        autoPhaseSwitched = true;
+      } else if (dF < 260) {
+        autoState = AUTO_PLANNING_PATH;
+        autoPhaseSwitched = true;
+      }
+      break;
+    }
+
+    case AUTO_STUCK_DETECTED: { // State 6: Stall / boxed-in / oscillation trap alert state
+      y = 0.0f; z = 0.0f;
+      if (now >= autoStateUntil) {
+        if (isOscillationTrap || (dL < 260 && dR < 260)) {
+          autoState = AUTO_SCURVE_ESCAPE;
+          autoStateStart = now;
+          autoStateUntil = now + 850;
+        } else {
+          autoState = AUTO_REVERSE_BACKTRACK;
+          autoStateStart = now;
+          autoStateUntil = now + 750;
+        }
+        autoPhaseSwitched = true;
+      }
+      break;
+    }
+
+    case AUTO_REVERSE_BACKTRACK: { // State 7: Straight reverse along breadcrumb vector
+      y = -0.80f;
+      z = -0.15f * autoEscapeDir;
+      spd = min(100, (int)lroundf(spd * 1.15f));
+      bool clearanceOpen = (now - autoStateStart >= 500) && (dF > 420 && dL > 340 && dR > 340);
+      if (now >= autoStateUntil || clearanceOpen) {
+        autoState = AUTO_PLANNING_PATH;
+        autoPhaseSwitched = true;
+      }
+      break;
+    }
+
+    case AUTO_SCURVE_ESCAPE: { // State 8: Reverse + lateral S-curve arc out of corner trap
+      y = -0.82f;
+      z = -0.75f * autoEscapeDir;
+      spd = min(100, (int)lroundf(spd * 1.15f));
+      if (now >= autoStateUntil) {
+        autoState = AUTO_PLANNING_PATH;
+        autoPhaseSwitched = true;
+      }
+      break;
+    }
+
+    case AUTO_COMPASS_PIVOT: { // State 9: In-place compass-locked pivot to autoTargetHeading
+      y = 0.0f;
+      float hErr = wrapDeg(autoTargetHeading - heading);
+      z = constrain(hErr * 0.035f + 0.35f * autoEscapeDir, -0.88f, 0.88f);
+      if (fabsf(hErr) < 35.0f) {
+        z *= constrain(fabsf(hErr) / 35.0f, 0.45f, 1.0f);
+      }
+      spd = min(100, (int)lroundf(spd * 1.05f));
+      if (fabsf(hErr) < 18.0f || now >= autoStateUntil) {
+        autoState = AUTO_CRUISE_CLEAR;
+        autoPhaseSwitched = true;
+      }
+      break;
+    }
+
+    case AUTO_WALL_FOLLOW: { // State 10: Parallel contour along side obstacle (side < 380mm, front clear)
+      if (dL < 380) {
+        float err = (dL - 320.0f) / 300.0f;
+        z = constrain(err * -0.45f, -0.35f, 0.35f);
+        y = 0.75f;
+      } else if (dR < 380) {
+        float err = (dR - 320.0f) / 300.0f;
+        z = constrain(err * 0.45f, -0.35f, 0.35f);
+        y = 0.75f;
+      } else {
+        autoState = AUTO_CRUISE_CLEAR;
+        autoPhaseSwitched = true;
+      }
+      if (dF < 480) {
+        autoState = AUTO_THINKING_SCAN;
+        autoStateStart = now;
+        autoStateUntil = now + 180;
+        autoPhaseSwitched = true;
+      }
+      break;
+    }
+
+    case AUTO_IMPACT_REFLEX: { // State 11: Emergency reverse + pivot upon MPU6050 collision detection
+      y = -0.85f;
+      z = (impactDir == IMPACT_LEFT ? -0.85f : 0.85f);
+      spd = max(spd, 65);
+      if (now >= autoStateUntil) {
+        autoState = AUTO_PLANNING_PATH;
+        autoPhaseSwitched = true;
+      }
+      break;
+    }
+
+    default:
+      autoState = AUTO_CRUISE_CLEAR;
+      break;
   }
 }
 
@@ -553,20 +747,31 @@ void applyCrashProtection(float &x, float &y, float &z) {
   uint16_t dF, dL, dR;
   getSensorRanges(dF, dL, dR);
 
-  // Proportional attenuation envelopes for 0 deg Ultrasonic and +/-32 deg ToF sensors
-  // Stop at 140mm, warning zone 140..420mm
-  float sF = constrain((dF - 140.0f) / (420.0f - 140.0f), 0.0f, 1.0f);
-  float sL = constrain((dL - 130.0f) / (380.0f - 130.0f), 0.0f, 1.0f);
-  float sR = constrain((dR - 130.0f) / (380.0f - 130.0f), 0.0f, 1.0f);
+  // Velocity-dependent braking lead distance (+40% mass compensation)
+  uint16_t inertiaLeadMm = (uint16_t)(fabsf(ax[1].v) * 60.0f * 1.4f);
+  float stopF = 180.0f + (float)inertiaLeadMm * 0.5f;
+  float warnF = 500.0f;
+  float stopT = 170.0f + (float)inertiaLeadMm * 0.5f;
+  float warnT = 460.0f;
+
+  float sF = constrain((dF - stopF) / (warnF - stopF), 0.0f, 1.0f);
+  float sL = constrain((dL - stopT) / (warnT - stopT), 0.0f, 1.0f);
+  float sR = constrain((dR - stopT) / (warnT - stopT), 0.0f, 1.0f);
 
   if (y > 0.0f) {
     float origY = y;
     float fwdLim = min(sF, min(sL, sR));
+    // Ultrasonic alone cannot stop the rover:
+    // Strictly require ToF corroboration; if uncorroborated, do not let sF trigger a stop
+    bool tofCorroborates = (dL < 650 || dR < 650);
+    if (!tofCorroborates && sF < min(sL, sR)) {
+      fwdLim = min(sL, sR);
+    }
     // If operator aggressively pushes stick (>0.80), allow a gentle creep crawl even if obstacle is near
     if (origY > 0.80f && fwdLim < 0.25f) fwdLim = 0.25f;
     y *= fwdLim;
 
-    // Deflect away from angled +/-32 deg obstacles while advancing
+    // Deflect away from angled +/-33 deg obstacles while advancing
     if ((sL < 0.85f || sR < 0.85f) && origY > 0.08f) {
       float deflect = (sR - sL); // >0 steers Right (away from Left ToF), <0 steers Left (away from Right ToF)
       if (mode == MODE_TANK) {
@@ -626,6 +831,7 @@ void controlTick() {
       float jerkX = ac[0] - emaAc[0];
       float jerkY = ac[1] - emaAc[1];
       float hJerk = sqrtf(jerkX * jerkX + jerkY * jerkY);
+      dynJerk = hJerk;
 
       // Instantaneous first derivatives
       float djX = fabsf(ac[0] - prevAc[0]);
@@ -636,8 +842,8 @@ void controlTick() {
       prevGy[0] = gy[0]; prevGy[1] = gy[1]; prevGy[2] = gy[2];
 
       // Physical impact threshold (distinguishes abrupt collision from motor ramp S-curves)
-      bool isImpact = (hJerk > 0.65f) || (djX > 0.52f || djY > 0.52f) || (dGyroZ > 130.0f && hJerk > 0.38f);
-      if (isImpact && (now - lastImpactTime > 450)) {
+      bool isImpact = ((hJerk > 0.85f && (djX > 0.65f || djY > 0.65f)) || (dGyroZ > 160.0f && hJerk > 0.55f));
+      if (isImpact && (now - lastImpactTime >= 1500)) {
         lastImpactTime = now;
         impactUntil = now + 420; // 420ms defensive recovery period
 
@@ -756,17 +962,25 @@ void controlTick() {
   bool remActive = (now - nowIn.t < 400);
   bool remDriving = remActive && (fabsf(nowIn.x) > 0.05f || fabsf(nowIn.y) > 0.05f || fabsf(nowIn.z) > 0.05f);
   bool webDriving = (now - webIn.t < 400) && (fabsf(webIn.x) > 0.03f || fabsf(webIn.y) > 0.03f || fabsf(webIn.z) > 0.03f);
-  Input in = remDriving ? nowIn : (webDriving ? webIn : (remActive ? nowIn : webIn));
+  Input in = remActive ? nowIn : (webDriving ? webIn : nowIn);
   bool fresh = (now - in.t < 400);
-  float x = fresh ? in.x : 0, y = fresh ? in.y : 0, z = fresh ? in.z : 0;
-  int spd = in.speed > 0 ? in.speed : 60;
+  float x = 0.0f, y = 0.0f, z = 0.0f;
+  if (fresh && (remDriving || webDriving)) {
+    x = in.x; y = in.y; z = in.z;
+    if (fabsf(x) < 0.05f) x = 0.0f;
+    if (fabsf(y) < 0.05f) y = 0.0f;
+    if (fabsf(z) < 0.05f) z = 0.0f;
+  } else if (!fresh) {
+    autoState = AUTO_CRUISE_CLEAR;
+  }
+  int spd = in.speed > 0 ? in.speed : 50;
   float amax = accelRate / 100.0f, jmax = jerkRate / 100.0f;
 
-  bool isAutoMode = (mode == MODE_AUTO) || (fresh && (in.flags & FLAG_AUTO));
+  bool isAutoMode = fresh && ((mode == MODE_AUTO) || (in.flags & FLAG_AUTO));
 
   switch (isAutoMode ? MODE_AUTO : mode) {
     case MODE_NORMAL:
-      // Linear and responsive across full throw (s3_remote applies user-configured expo)
+      amax *= 2.5f; jmax *= 3.0f;
       break;
     case MODE_CRAWL:
       // Controlled crawl speed with gentle acceleration and low jerk for precision micro-inching
@@ -809,6 +1023,7 @@ void controlTick() {
     case MODE_TANK:
       if (fabsf(x) > fabsf(z)) z = x;
       x = 0;
+      amax *= 2.5f; jmax *= 3.0f;
       break;
     case MODE_AUTO:
       runAutonomousTank(x, y, z, spd, amax, jmax);
@@ -842,9 +1057,9 @@ void controlTick() {
     strafeLockActive = false;
   }
 
-  // Anti-slip mecanum compensation: boost strafe x component to match forward traction
+  // Anti-slip mecanum compensation: boost strafe x component to match forward traction (+40% roller load)
   if (mode != MODE_TANK && !isAutoMode && fabsf(x) > 0.05f) {
-    x *= 1.15f;
+    x *= 1.28f;
   }
 
   if ((in.flags & FLAG_TURBO) && !isAutoMode) {
@@ -863,25 +1078,43 @@ void controlTick() {
 
 
 
+  bool stickActive = (fabsf(tgt[0]) > 0.03f || fabsf(tgt[1]) > 0.03f || fabsf(tgt[2]) > 0.03f);
+  if (!stickActive && fabsf(ax[0].v) < 0.025f && fabsf(ax[1].v) < 0.025f && fabsf(ax[2].v) < 0.025f) {
+    ax[0].v = ax[0].a = 0.0f;
+    ax[1].v = ax[1].a = 0.0f;
+    ax[2].v = ax[2].a = 0.0f;
+  }
+
   bool moving = fabsf(ax[0].v) > 0.01f || fabsf(ax[1].v) > 0.01f || fabsf(ax[2].v) > 0.01f;
   static bool wasMoving = false;
   static unsigned long moveStartMs = 0;
 
   // Anti-stiction breakaway pulse: whenever starting from rest, phase switching, or commanding motion
-  if ((moving && !wasMoving) || autoPhaseSwitched || ((fabsf(y) > 0.2f || fabsf(z) > 0.2f) && !wasMoving)) {
+  if ((moving && !wasMoving) || (stickActive && !wasMoving) || autoPhaseSwitched) {
     moveStartMs = now;
     autoPhaseSwitched = false;
   }
   int effSpd = spd;
   if (moving && (now - moveStartMs < 220)) {
-    effSpd = min(100, spd + 22); // 220ms high-torque breakaway pulse to break static friction
+    effSpd = max(60, min(100, spd + 45)); // 220ms high-torque breakaway kick duty, then settle to commanded speed
+  } else if (moving && effSpd < 40) {
+    effSpd = (now % 100 < 50) ? max(effSpd, 45) : effSpd;
+  }
+
+  // Prevent slow joystick deflection from getting swallowed by static friction / RP2040 deadband:
+  int outX = (int)lroundf(ax[0].v * 100);
+  int outY = (int)lroundf(ax[1].v * 100);
+  int outZ = (int)lroundf(ax[2].v * 100);
+  if (moving) {
+    if (outX != 0 && abs(outX) < 10) outX = (outX > 0) ? 10 : -10;
+    if (outY != 0 && abs(outY) < 10) outY = (outY > 0) ? 10 : -10;
+    if (outZ != 0 && abs(outZ) < 10) outZ = (outZ > 0) ? 10 : -10;
   }
 
   if (moving || wasMoving || now - lastOut > 100) {
     lastOut = now;
     wasMoving = moving;
-    Serial2.printf("D,%d,%d,%d,%d\n", (int)lroundf(ax[0].v * 100), (int)lroundf(ax[1].v * 100),
-                   (int)lroundf(ax[2].v * 100), moving ? effSpd : 0);
+    Serial2.printf("D,%d,%d,%d,%d\n", outX, outY, outZ, moving ? effSpd : 0);
   }
 }
 
@@ -916,7 +1149,10 @@ void handlePacket() {
     case PKT_MODE:
       mode = p.mode % MODE_COUNT;
       crashProt = !(p.flags & FLAG_CRASH_OFF);
+      nowIn.flags = p.flags;
+      nowIn.speed = p.speed;
       autoPaused = false;
+      saveCfg();
       break;
     case PKT_ROTATE: startRotate(p.arg); break;
     case PKT_CALIB:
@@ -938,6 +1174,7 @@ void handlePacket() {
               (millis() < impactUntil ? FLAG_IMPACT : 0);
   ack.seq = p.seq;
   ack.arg = (int16_t)lroundf(fmodf(heading + 3600.0f, 360.0f));
+  ack.x = (int8_t)autoState;
   esp_now_send(mac, (uint8_t*)&ack, sizeof(ack));
 }
 
@@ -1069,7 +1306,7 @@ void handleCfg() {
     strafeInv = server.arg("si").toInt();
     rotInv = server.arg("ri").toInt();
     minDuty = constrain(server.arg("md").toInt(), 0, 60000);
-    if (minDuty < 34000) minDuty = 34000;
+    if (minDuty < 40000) minDuty = 40000;
     spinMs = constrain(server.arg("sp").toInt(), 200, 10000);
     accelStep = constrain(server.arg("ac").toInt(), 1, 100);
     saveCfg();
@@ -1095,11 +1332,11 @@ void handleStatus() {
 }
 
 void handleTelem() {
-  char b[480];
+  char b[512];
   snprintf(b, sizeof(b),
     "{\"q\":[%.4f,%.4f,%.4f,%.4f],\"g\":[%.4f,%.4f,%.4f],\"a\":[%.4f,%.4f,%.4f],\"m\":[%.2f,%.2f,%.2f],"
     "\"us\":%u,\"tof\":[%u,%u],\"w\":[%d,%d,%d,%d],\"pos\":[%.1f,%.1f],\"hd\":%.2f,\"r\":%.2f,\"p\":%.2f,"
-    "\"mode\":%d,\"imp\":%u,\"cal\":%u,\"mc\":%.2f,\"t\":%lu}",
+    "\"mode\":%d,\"as\":%d,\"at\":%.1f,\"imp\":%u,\"cal\":%u,\"mc\":%.2f,\"t\":%lu}",
     fusion.q0, fusion.q1, fusion.q2, fusion.q3,
     fusion.gyroRaw[0] - fusion.gyroBias[0], fusion.gyroRaw[1] - fusion.gyroBias[1], fusion.gyroRaw[2] - fusion.gyroBias[2],
     lastAcc[0] * 9.80665f, lastAcc[1] * 9.80665f, lastAcc[2] * 9.80665f,
@@ -1107,7 +1344,7 @@ void handleTelem() {
     ultraMm, tofMm[0], tofMm[1],
     wheelMmS[0], wheelMmS[1], wheelMmS[2], wheelMmS[3],
     odomX, odomY, heading, roll, pitch,
-    mode,
+    mode, (int)autoState, autoTargetHeading,
     (millis() < impactUntil ? impactDir : 0),
     (fusion.gyroCal ? 1 : 0) | (fusion.magCal ? 2 : 0) | (fusion.levelCal ? 4 : 0) | (fusion.stationary ? 8 : 0),
     fusion.magCoverage, millis());
@@ -1152,65 +1389,66 @@ void initToFSensors() {
   pinMode(PIN_US_ECHO, INPUT);
   attachInterrupt(digitalPinToInterrupt(PIN_US_ECHO), usEchoISR, CHANGE);
 
-  pinMode(PIN_TOF1_XSHUT, OUTPUT); pinMode(PIN_TOF2_XSHUT, OUTPUT);
+  pinMode(PIN_TOF1_XSHUT, OUTPUT);
+  pinMode(PIN_TOF2_XSHUT, OUTPUT);
+  pinMode(LD2402_OUT_PIN, INPUT);
 
-  if (!tof1Ready && !tof2Ready) {
-    // Both offline: full clean sequenced power-up
+  // Clean sequenced reset of both ToF sensors to eliminate address conflicts
+  digitalWrite(PIN_TOF1_XSHUT, LOW);
+  digitalWrite(PIN_TOF2_XSHUT, LOW);
+  delay(25);
+
+  Wire.setClock(100000);
+
+  // Power up and initialize TOF1 on address 0x32
+  digitalWrite(PIN_TOF1_XSHUT, HIGH);
+  delay(25);
+  tof1Ready = tof1.begin(TOF1_ADDR, false, &Wire);
+  if (tof1Ready) {
+    tof1.configSensor(Adafruit_VL53L0X::VL53L0X_SENSE_LONG_RANGE);
+    tof1.startRangeContinuous(35);
+  } else {
     digitalWrite(PIN_TOF1_XSHUT, LOW);
-    digitalWrite(PIN_TOF2_XSHUT, LOW);
-    delay(15);
-    digitalWrite(PIN_TOF1_XSHUT, HIGH);
-    delay(15);
-    tof1Ready = tof1.begin(TOF1_ADDR, false, &Wire);
-    if (!tof1Ready) digitalWrite(PIN_TOF1_XSHUT, LOW);
-    else {
-      tof1.configSensor(Adafruit_VL53L0X::VL53L0X_SENSE_LONG_RANGE);
-      tof1.startRangeContinuous(35);
-    }
+  }
 
-    digitalWrite(PIN_TOF2_XSHUT, HIGH);
-    delay(15);
-    tof2Ready = tof2.begin(TOF2_ADDR, false, &Wire);
-    if (!tof2Ready) digitalWrite(PIN_TOF2_XSHUT, LOW);
-    else {
-      tof2.configSensor(Adafruit_VL53L0X::VL53L0X_SENSE_LONG_RANGE);
-      tof2.startRangeContinuous(35);
-    }
-  } else if (!tof1Ready && tof2Ready) {
-    // Only TOF1 offline: wake TOF1 only (leaves TOF2 on 0x33 undisturbed)
-    digitalWrite(PIN_TOF1_XSHUT, HIGH);
-    delay(15);
-    tof1Ready = tof1.begin(TOF1_ADDR, false, &Wire);
-    if (!tof1Ready) digitalWrite(PIN_TOF1_XSHUT, LOW);
-    else {
-      tof1.configSensor(Adafruit_VL53L0X::VL53L0X_SENSE_LONG_RANGE);
-      tof1.startRangeContinuous(35);
-    }
-  } else if (tof1Ready && !tof2Ready) {
-    // Only TOF2 offline: wake TOF2 only (leaves TOF1 on 0x32 undisturbed)
-    digitalWrite(PIN_TOF2_XSHUT, HIGH);
-    delay(15);
-    tof2Ready = tof2.begin(TOF2_ADDR, false, &Wire);
-    if (!tof2Ready) digitalWrite(PIN_TOF2_XSHUT, LOW);
-    else {
-      tof2.configSensor(Adafruit_VL53L0X::VL53L0X_SENSE_LONG_RANGE);
-      tof2.startRangeContinuous(35);
-    }
+  // Power up and initialize TOF2 on address 0x33
+  digitalWrite(PIN_TOF2_XSHUT, HIGH);
+  delay(25);
+  tof2Ready = tof2.begin(TOF2_ADDR, false, &Wire);
+  if (tof2Ready) {
+    tof2.configSensor(Adafruit_VL53L0X::VL53L0X_SENSE_LONG_RANGE);
+    tof2.startRangeContinuous(35);
+  } else {
+    digitalWrite(PIN_TOF2_XSHUT, LOW);
   }
 }
 
 void readRangeSensors() {
+  radarPresence = (digitalRead(LD2402_OUT_PIN) == HIGH);
+
   unsigned long now = millis();
   if (now - lastSensors < 24) return;
   lastSensors = now;
 
-  // Low-frequency non-blocking background retry (every 10s up to 5 times)
   static unsigned long lastTofRetry = 0;
-  static int tofRetries = 0;
-  if ((!tof1Ready || !tof2Ready) && tofRetries < 5 && (now - lastTofRetry > 10000)) {
+  static unsigned long lastTofReadMs[2] = {0, 0};
+
+  // If a sensor is marked ready but has stalled (>2500ms without complete reading), mark offline for recovery
+  if (tof1Ready && lastTofReadMs[0] > 0 && (now - lastTofReadMs[0] > 2500)) {
+    tof1Ready = false;
+    tofMm[0] = 0;
+  }
+  if (tof2Ready && lastTofReadMs[1] > 0 && (now - lastTofReadMs[1] > 2500)) {
+    tof2Ready = false;
+    tofMm[1] = 0;
+  }
+
+  // Continuous background auto-recovery every 5s if any sensor is offline (no permanent lock-out)
+  if ((!tof1Ready || !tof2Ready) && (now - lastTofRetry > 5000)) {
     lastTofRetry = now;
-    tofRetries++;
     initToFSensors();
+    if (tof1Ready) lastTofReadMs[0] = now;
+    if (tof2Ready) lastTofReadMs[1] = now;
   }
 
   // --- 1. Ultrasonic Capture with 2-Cycle Fallback ---
@@ -1230,23 +1468,29 @@ void readRangeSensors() {
       pulseUs = usPulseWidthUs;
       usNewData = false;
       interrupts();
-      if (pulseUs >= 100 && pulseUs <= 18000) {
+      if (pulseUs >= 85 && pulseUs <= 24000) {
         gotReading = true;
         usFailCycles = 0;
       }
     }
 
+    static unsigned long lastPulseInFallback = 0;
     if (!gotReading) {
       usFailCycles++;
-      if (usFailCycles >= 2) {
-        // Direct pulseIn fallback with 16ms timeout (~2.7m max range)
+      if (usFailCycles >= 5) {
+        ultraMm = 2000;
+        for (int i = 0; i < 5; i++) usBuffer[i] = 2000;
+      }
+      if (usFailCycles >= 3 && (now - lastPulseInFallback >= 250)) {
+        lastPulseInFallback = now;
+        // Direct bounded pulseIn fallback with 12ms timeout (~2000mm max range)
         digitalWrite(PIN_US_TRIG, LOW);
         delayMicroseconds(2);
         digitalWrite(PIN_US_TRIG, HIGH);
         delayMicroseconds(10);
         digitalWrite(PIN_US_TRIG, LOW);
-        pulseUs = pulseIn(PIN_US_ECHO, HIGH, 16000);
-        if (pulseUs >= 100 && pulseUs <= 16000) {
+        pulseUs = pulseIn(PIN_US_ECHO, HIGH, 12000);
+        if (pulseUs >= 85 && pulseUs <= 12000) {
           gotReading = true;
           usFailCycles = 0;
         } else {
@@ -1257,7 +1501,7 @@ void readRangeSensors() {
 
     if (gotReading) {
       uint16_t rawMm = (uint16_t)(pulseUs * 0.1715f);
-      if (rawMm >= 25 && rawMm <= 2500) {
+      if (rawMm >= 25 && rawMm <= 3500) {
         if (ultraMm == 0) {
           for (int i = 0; i < 5; i++) usBuffer[i] = rawMm;
           ultraMm = rawMm;
@@ -1272,7 +1516,7 @@ void readRangeSensors() {
             }
           }
           uint16_t med = s[2];
-          ultraMm = (uint16_t)(0.55f * ultraMm + 0.45f * med);
+          ultraMm = med; // Strict 5-sample median rejection
         }
       }
     }
@@ -1316,10 +1560,24 @@ void updateOdometry(float dt) {
   float vx = (wheelMmS[0] + wheelMmS[1] + wheelMmS[2] + wheelMmS[3]) / 4.0f;
   float vy = (-wheelMmS[0] + wheelMmS[1] + wheelMmS[2] - wheelMmS[3]) / 4.0f;
   if (fabsf(vx) < 0.1f && fabsf(vy) < 0.1f && (fabsf(ax[0].v) > 0.02f || fabsf(ax[1].v) > 0.02f)) {
-    // Kinematic dead-reckoning estimation (mm/s) when encoder lines are uncalibrated
-    int activeSpd = (millis() - webIn.t < 400 && webIn.speed > 0) ? webIn.speed : (nowIn.speed > 0 ? nowIn.speed : 70);
-    vx = ax[1].v * activeSpd * 8.5f;
-    vy = ax[0].v * activeSpd * 8.5f;
+    // Kinematic dead-reckoning estimation (mm/s) when encoder lines are uncalibrated.
+    // GATED ON MEASURED PHYSICAL MOTION / ACCELEROMETER JERK & IMU:
+    // If the IMU stationary filter detects the robot is still (fusion.stationary == true),
+    // or if measured high-pass linear jerk and gyro yaw rate are below physical motion thresholds,
+    // the rover is physically stuck (e.g. stiction with +40% mass) and NOT translating.
+    // In that case, keep vx = 0, vy = 0 so the controller display & telemetry do NOT show phantom motion!
+    bool isPhysicallyMoving = (!fusion.stationary) && (dynJerk > 0.045f || fabsf(fusion.gz) > 0.06f);
+
+    int activeSpd = (millis() - webIn.t < 400 && webIn.speed > 0) ? webIn.speed : (nowIn.speed > 0 ? nowIn.speed : 50);
+    float effort = max(fabsf(ax[0].v), fabsf(ax[1].v)) * activeSpd;
+    if (isPhysicallyMoving && effort >= 12.0f) {
+      float scale = (effort - 12.0f) / effort;
+      vx = ax[1].v * activeSpd * 8.5f * scale;
+      vy = ax[0].v * activeSpd * 8.5f * scale;
+    } else {
+      vx = 0.0f;
+      vy = 0.0f;
+    }
   }
   float th = heading * DEG_TO_RAD;
   odomX += (vx * cosf(th) - vy * sinf(th)) * dt / 10.0f;
@@ -1355,16 +1613,17 @@ void sendTelemetry() {
     t.calFlags = ((imuReady && fusion.gyroCal) ? CAL_GYRO_OK : 0) | ((magReady && fusion.magCal) ? CAL_MAG_OK : 0) |
                  (fusion.levelCal ? CAL_LEVEL_OK : 0) | (fusion.stationary ? CAL_STILL : 0);
     t.magCoverage = (uint8_t)(fusion.magCoverage * 100);
+    t.batMv = (uint16_t)autoState;
     t.seq = ++telemSeq;
     esp_now_send(remoteMac, (uint8_t*)&t, sizeof(t));
   }
 
   if (WiFi.status() == WL_CONNECTED) {
-    char b[384];
+    char b[512];
     snprintf(b, sizeof(b),
       "{\"q\":[%.4f,%.4f,%.4f,%.4f],\"g\":[%.4f,%.4f,%.4f],\"a\":[%.4f,%.4f,%.4f],\"m\":[%.2f,%.2f,%.2f],"
       "\"us\":%u,\"tof\":[%u,%u],\"w\":[%d,%d,%d,%d],\"pos\":[%.1f,%.1f],\"hd\":%.2f,\"r\":%.2f,\"p\":%.2f,"
-      "\"mode\":%d}",
+      "\"mode\":%d,\"as\":%d,\"at\":%.1f,\"rp\":%d,\"rm\":%u,\"doa\":%.1f,\"dc\":%.2f}",
       fusion.q0, fusion.q1, fusion.q2, fusion.q3,
       fusion.gyroRaw[0] - fusion.gyroBias[0], fusion.gyroRaw[1] - fusion.gyroBias[1], fusion.gyroRaw[2] - fusion.gyroBias[2],
       lastAcc[0] * 9.80665f, lastAcc[1] * 9.80665f, lastAcc[2] * 9.80665f,
@@ -1372,7 +1631,8 @@ void sendTelemetry() {
       ultraMm, tofMm[0], tofMm[1],
       wheelMmS[0], wheelMmS[1], wheelMmS[2], wheelMmS[3],
       odomX, odomY, heading, roll, pitch,
-      mode);
+      mode, (int)autoState, autoTargetHeading,
+      radarPresence ? 1 : 0, radarDistanceMm, doaAzimuthDeg, doaConfidence);
     telemUdp.beginPacket(IPAddress(192, 168, 0, 111), 8888);
     telemUdp.write((const uint8_t*)b, strlen(b));
     telemUdp.endPacket();
@@ -1556,6 +1816,19 @@ void setup() {
   esp_now_register_recv_cb(onRecv);
 
   ArduinoOTA.setHostname("Mecanum-Rover");
+  ArduinoOTA.onStart([]() {
+    otaInProgress = true;
+    esp_now_unregister_recv_cb();
+    Serial2.print("D,0,0,0,0\n");
+  });
+  ArduinoOTA.onEnd([]() {
+    otaInProgress = false;
+    esp_now_register_recv_cb(onRecv);
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    otaInProgress = false;
+    esp_now_register_recv_cb(onRecv);
+  });
   ArduinoOTA.begin();
 
   server.on("/health", []() { server.send(200, "application/json", "{\"status\":\"ok\",\"service\":\"rover_core\"}"); });
@@ -1645,66 +1918,6 @@ void setup() {
     s += extra;
     server.send(200, "application/json", s);
   });
-  server.on("/scan_all", []() {
-    Wire.end();
-    const uint8_t pins[] = {4, 5, 13, 14, 15, 18, 19, 21, 22, 23, 32, 33};
-    const int nPins = sizeof(pins) / sizeof(pins[0]);
-    const uint8_t targetAddrs[] = {0x68, 0x69, 0x0D, 0x1E, 0x0C, 0x1C, 0x0E};
-    String res = "{\"hits\":[";
-    bool firstHit = true;
-
-    for (int i = 0; i < nPins; i++) {
-      for (int j = 0; j < nPins; j++) {
-        if (i == j) continue;
-        uint8_t sda = pins[i];
-        uint8_t scl = pins[j];
-        pinMode(sda, INPUT_PULLUP);
-        pinMode(scl, INPUT_PULLUP);
-        delayMicroseconds(10);
-        if (digitalRead(sda) == LOW || digitalRead(scl) == LOW) continue;
-
-        for (int aIdx = 0; aIdx < 7; aIdx++) {
-          uint8_t addr = targetAddrs[aIdx];
-          // Bit-bang I2C START
-          pinMode(sda, OUTPUT); digitalWrite(sda, LOW); delayMicroseconds(6);
-          pinMode(scl, OUTPUT); digitalWrite(scl, LOW); delayMicroseconds(6);
-          // Send 7-bit addr + W (0)
-          uint8_t byteVal = (addr << 1) | 0;
-          for (int b = 7; b >= 0; b--) {
-            if (byteVal & (1 << b)) pinMode(sda, INPUT_PULLUP);
-            else { pinMode(sda, OUTPUT); digitalWrite(sda, LOW); }
-            delayMicroseconds(5);
-            pinMode(scl, INPUT_PULLUP); delayMicroseconds(6);
-            pinMode(scl, OUTPUT); digitalWrite(scl, LOW); delayMicroseconds(5);
-          }
-          // Read ACK bit
-          pinMode(sda, INPUT_PULLUP); delayMicroseconds(5);
-          pinMode(scl, INPUT_PULLUP); delayMicroseconds(6);
-          int ack = digitalRead(sda); // LOW = ACK
-          // Verify it's not stuck LOW by releasing SCL and sending STOP
-          pinMode(scl, OUTPUT); digitalWrite(scl, LOW); delayMicroseconds(5);
-          pinMode(sda, OUTPUT); digitalWrite(sda, LOW); delayMicroseconds(5);
-          pinMode(scl, INPUT_PULLUP); delayMicroseconds(6);
-          pinMode(sda, INPUT_PULLUP); delayMicroseconds(6);
-          int idleAfter = digitalRead(sda);
-
-          if (ack == LOW && idleAfter == HIGH) {
-            if (!firstHit) res += ",";
-            firstHit = false;
-            char buf[64];
-            snprintf(buf, sizeof(buf), "{\"sda\":%d,\"scl\":%d,\"addr\":\"0x%02X\"}", sda, scl, addr);
-            res += buf;
-          }
-        }
-      }
-    }
-    res += "]}";
-    // Restore default
-    initToFSensors();
-    Wire.begin(19, 22, 100000);
-    Wire.setTimeOut(30);
-    server.send(200, "application/json", res);
-  });
   server.begin();
   sendCfg();
   lastTick = millis();
@@ -1713,6 +1926,7 @@ void setup() {
 void loop() {
   server.handleClient();
   ArduinoOTA.handle();
+  if (otaInProgress) return;
   readTelemetry();
 
   // Pi 3B+ Hardware UART Link (GPIO 4 RX)
@@ -1743,7 +1957,7 @@ void loop() {
   static unsigned long lastPiTx = 0;
   if (millis() - lastPiTx >= 100) {
     lastPiTx = millis();
-    Serial1.printf("R,%.1f,%u,%u,%u,%u\n", heading, ultraMm, tofMm[0], tofMm[1], mode);
+    Serial1.printf("R,%.1f,%u,%u,%u,%u,%u\n", heading, ultraMm, tofMm[0], tofMm[1], mode, radarPresence ? 1 : 0);
   }
 
   handlePacket();
