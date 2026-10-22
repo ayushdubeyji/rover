@@ -1,16 +1,22 @@
 // ---------------------------------------------------------------- //
 // Pico 3-Microphone Synchronous I2S Capture PIO Program & C Helper
-// Target: RP2040 (Raspberry Pi Pico / Rover Coprocessor)
-// Microphones: 3x INMP441 MEMS I2S
-// Pinout:
-//   - GP2: SCK (Continuous Bit Clock, ~1.024 MHz)
-//   - GP3: WS  (Word Select / Frame Sync, 16 kHz)
-//   - GP4: SD0 (Data Line 0: Mic 1 Left + Mic 2 Right)
-//   - GP5: SD1 (Data Line 1: Mic 3 Left + unused Right)
+// Target: RP2040-Zero (Waveshare RP2040-Zero Rover Main Controller)
+// Microphones: 3x INMP441 MEMS I2S (Equilateral Triangle d = 5.5 cm)
+// Default Pinout (Option B - Direct RP2040-Zero):
+//   - GP4:  SCK (Continuous Bit Clock, PIO side_set base pin 0)
+//   - GP5:  WS  (Word Select / Frame Sync, PIO side_set base pin 1)
+//   - GP28: SD0 (Data Line 0: Mic 1 Left + Mic 2 Right, PIO in base pin 0)
+//   - GP29: SD1 (Data Line 1: Mic 3 Left, PIO in base pin 1)
 // ---------------------------------------------------------------- //
 
 #ifndef PICO_3MIC_I2S_CAPTURE_PIO_H
 #define PICO_3MIC_I2S_CAPTURE_PIO_H
+
+// RP2040-Zero Default Pin Constants
+#define PIN_I2S_SCK             4   // GP4 (PIO side_set base pin 0: SCK bit clock)
+#define PIN_I2S_WS              5   // GP5 (PIO side_set base pin 1: WS frame sync)
+#define PIN_I2S_SD0             28  // GP28 (PIO in base pin 0: SD0 = Mic 1 Front 0° L + Mic 2 Rear-Right -120° R)
+#define PIN_I2S_SD1             29  // GP29 (PIO in base pin 1: SD1 = Mic 3 Rear-Left +120° L)
 
 #ifdef __cplusplus
 extern "C" {

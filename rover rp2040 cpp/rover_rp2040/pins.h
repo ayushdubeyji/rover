@@ -58,5 +58,12 @@
 #define PIN_ENCODER_OPTIONAL    28  // GP28 (Optional single-encoder pulse counter, disabled by default)
 #define PIN_SPARE               29  // GP29 (Spare ADC3 / GPIO)
 
+// --- Option B: 3x INMP441 Equilateral Triangle I2S Microphones (PIO Dual-Data Capture) ---
+// Pi 3B+ links natively via USB-C (/dev/rover_rp2040), freeing GP4/GP5 for hardware I2S SCK/WS!
+#define PIN_I2S_SCK             4   // GP4  (PIO side_set pin 0: continuous bit clock)
+#define PIN_I2S_WS              5   // GP5  (PIO side_set pin 1: 16 kHz word select)
+#define PIN_I2S_SD0             28  // GP28 (PIO in pin 0: Mic 1 Front 0° L [L/R=GND] + Mic 2 Rear-Right -120° R [L/R=3V3])
+#define PIN_I2S_SD1             29  // GP29 (PIO in pin 1: Mic 3 Rear-Left +120° L [L/R=GND])
+
 // Onboard WS2812 RGB LED on Waveshare RP2040-Zero
 #define PIN_WS2812_ONBOARD      16
