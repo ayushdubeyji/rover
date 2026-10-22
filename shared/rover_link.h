@@ -8,9 +8,11 @@ extern "C" {
 #endif
 
 // --- Frame Synchronization & Protocol Constants ---
-#define ROVER_LINK_SYNC0        0xAA
-#define ROVER_LINK_SYNC1        0x55
-#define ROVER_LINK_MAX_PAYLOAD  64
+#define ROVER_LINK_SYNC0          0xAA
+#define ROVER_LINK_SYNC1          0x55
+#define ROVER_LINK_MAX_PAYLOAD    64
+#define ROVER_LINK_MAX_FRAME_SIZE (ROVER_LINK_MAX_PAYLOAD + 6)
+#define PKT_MAGIC                 0xA7
 
 // Default & fallback baud rates
 #define ROVER_UART0_BAUD_DEFAULT  921600
@@ -56,6 +58,22 @@ enum DriveMode : uint8_t {
   MODE_TANK         = 8,
   MODE_AUTO         = 9,
   MODE_COUNT        = 10
+};
+
+// Autonomous Navigation States (12 States)
+enum AutoNavState : uint8_t {
+  AUTO_CRUISE_CLEAR      = 0,
+  AUTO_THINKING_SCAN     = 1,
+  AUTO_PLANNING_PATH     = 2,
+  AUTO_VEER_LEFT         = 3,
+  AUTO_VEER_RIGHT        = 4,
+  AUTO_CAUTIOUS_CREEP    = 5,
+  AUTO_STUCK_DETECTED    = 6,
+  AUTO_REVERSE_BACKTRACK = 7,
+  AUTO_SCURVE_ESCAPE     = 8,
+  AUTO_COMPASS_PIVOT     = 9,
+  AUTO_WALL_FOLLOW       = 10,
+  AUTO_IMPACT_REFLEX     = 11
 };
 
 // Mode / Telemetry Flags

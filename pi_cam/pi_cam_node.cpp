@@ -25,6 +25,7 @@
 #include <arpa/inet.h>
 #include <sys/sysinfo.h>
 #include <poll.h>
+#include "rover_link.h"
 
 // ============================================================================
 // 1. EMBEDDED HIGH-SPEED BASELINE JPEG ENCODER WITH SOLID-BLOCK BYPASS
@@ -521,6 +522,8 @@ struct RoverState {
   uint16_t ultraMm = 0;
   uint16_t tofLeftMm = 0;
   uint16_t tofRightMm = 0;
+  uint16_t tofFrontMm = 0;
+  uint16_t tofRearMm = 0;
   uint8_t mode = 0;
   std::chrono::steady_clock::time_point lastUpdate;
 };
@@ -623,9 +626,19 @@ int openUart(const char* port) {
 }
 
 void uartThreadFunc() {
-  int uartFd = openUart("/dev/serial0");
+  const char* const DEV_RP2040_CDC = "/dev/rover_rp2040";
+  const char* const DEV_SERIAL0    = "/dev/serial0";
+  const char* currentPort = DEV_RP2040_CDC;
+
+  int uartFd = openUart(currentPort);
   if (uartFd < 0) {
-    std::cerr << "[UART] Warning: Unable to open /dev/serial0: " << strerror(errno) << ". Retrying in loop...\n";
+    currentPort = DEV_SERIAL0;
+    uartFd = openUart(currentPort);
+  }
+  if (uartFd >= 0) {
+    std::cout << "[UART] Opened " << currentPort << " successfully.\n";
+  } else {
+    std::cerr << "[UART] Warning: Unable to open /dev/rover_rp2040 or /dev/serial0. Retrying in loop...\n";
   }
 
   int udpSock = socket(AF_INET, SOCK_DGRAM, 0);
@@ -639,19 +652,44 @@ void uartThreadFunc() {
   inet_pton(AF_INET, "192.168.0.101", &roverAddr.sin_addr);
 
   std::string rxBuffer;
+  RoverFrameParser parser;
+  rover_parser_init(&parser);
+
   auto lastTxTime = std::chrono::steady_clock::now();
   auto lastUdpJsonTime = std::chrono::steady_clock::now();
+  auto lastRxTime = std::chrono::steady_clock::now();
 
   while (g_running) {
     auto now = std::chrono::steady_clock::now();
 
+    // Auto failover / reconnect logic
     if (uartFd < 0) {
       std::this_thread::sleep_for(std::chrono::milliseconds(500));
-      uartFd = openUart("/dev/serial0");
-      if (uartFd >= 0) std::cout << "[UART] Reopened /dev/serial0 successfully.\n";
+      uartFd = openUart(DEV_RP2040_CDC);
+      if (uartFd >= 0) {
+        currentPort = DEV_RP2040_CDC;
+        std::cout << "[UART] Connected to " << currentPort << " (USB CDC).\n";
+        lastRxTime = now;
+      } else {
+        uartFd = openUart(DEV_SERIAL0);
+        if (uartFd >= 0) {
+          currentPort = DEV_SERIAL0;
+          std::cout << "[UART] Failover connected to " << currentPort << " (UART1 115200).\n";
+          lastRxTime = now;
+        }
+      }
+    } else {
+      // Check for link timeout (2500 ms without valid data)
+      if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastRxTime).count() > 2500) {
+        std::cout << "[UART] Link timeout on " << currentPort << " (>2.5s). Failing over...\n";
+        close(uartFd);
+        uartFd = -1;
+        currentPort = (currentPort == DEV_RP2040_CDC) ? DEV_SERIAL0 : DEV_RP2040_CDC;
+        rover_parser_init(&parser);
+      }
     }
 
-    // 15 Hz UART TX to Rover ESP32: V,<vis_f_mm>,<vis_l_mm>,<vis_r_mm>,<cam_online>\n
+    // 15 Hz UART TX to Rover: V,<vis_f_mm>,<vis_l_mm>,<vis_r_mm>,<cam_online>\n
     if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastTxTime).count() >= 66) {
       lastTxTime = now;
       if (uartFd >= 0) {
@@ -691,31 +729,72 @@ void uartThreadFunc() {
       sendto(udpSock, jsonBuf, jLen, 0, (struct sockaddr*)&roverAddr, sizeof(roverAddr));
     }
 
-    // UART RX from Rover ESP32: R,<hdg>,<uMm>,<tL>,<tR>,<mode>\n
+    // UART RX from Rover RP2040: Framed binary protocol + legacy ASCII fallback
     if (uartFd >= 0) {
       char byteBuf[64];
       int n = read(uartFd, byteBuf, sizeof(byteBuf) - 1);
       if (n > 0) {
         g_vision.uart_rx += n;
         for (int i = 0; i < n; i++) {
-          char c = byteBuf[i];
-          if (c == '\n') {
-            if (!rxBuffer.empty() && rxBuffer[0] == 'R') {
-              float hdg = 0; uint16_t uMm = 0, tL = 0, tR = 0; int mode = 0;
-              if (sscanf(rxBuffer.c_str(), "R,%f,%hu,%hu,%hu,%d", &hdg, &uMm, &tL, &tR, &mode) >= 4) {
+          uint8_t c = (uint8_t)byteBuf[i];
+
+          // 1. Check framed protocol
+          if (rover_parser_feed(&parser, c)) {
+            lastRxTime = now;
+            if (parser.msg_type == MSG_TELEM && parser.len >= sizeof(TelemPkt)) {
+              TelemPkt t;
+              memcpy(&t, parser.payload, sizeof(TelemPkt));
+
+              float q0 = (float)t.q[0] / 16384.0f;
+              float q1 = (float)t.q[1] / 16384.0f;
+              float q2 = (float)t.q[2] / 16384.0f;
+              float q3 = (float)t.q[3] / 16384.0f;
+              float siny_cosp = 2.0f * (q0 * q3 + q1 * q2);
+              float cosy_cosp = 1.0f - 2.0f * (q2 * q2 + q3 * q3);
+              float hdg = atan2f(siny_cosp, cosy_cosp) * 57.2957795f;
+
+              {
                 std::lock_guard<std::mutex> lk(g_roverMutex);
                 g_rover.heading = hdg;
-                g_rover.ultraMm = uMm;
-                g_rover.tofLeftMm = tL;
-                g_rover.tofRightMm = tR;
-                g_rover.mode = (uint8_t)mode;
+                g_rover.ultraMm = t.ultraMm;
+                g_rover.tofFrontMm = t.tofMm[0];
+                g_rover.tofRearMm = t.tofMm[1];
+                g_rover.tofLeftMm = t.tofMm[0];
+                g_rover.tofRightMm = t.tofMm[1];
+                g_rover.mode = (uint8_t)(t.batMv & 0xFF);
                 g_rover.lastUpdate = std::chrono::steady_clock::now();
               }
-              sendto(udpSock, rxBuffer.c_str(), rxBuffer.length(), 0, (struct sockaddr*)&hostAddr, sizeof(hostAddr));
+
+              char udpLine[128];
+              int ulen = snprintf(udpLine, sizeof(udpLine), "R,%.2f,%hu,%hu,%hu,%d\n",
+                                  hdg, t.ultraMm, t.tofMm[0], t.tofMm[1], (int)(t.batMv & 0xFF));
+              sendto(udpSock, udpLine, ulen, 0, (struct sockaddr*)&hostAddr, sizeof(hostAddr));
             }
-            rxBuffer.clear();
-          } else if (c != '\r' && rxBuffer.length() < 128) {
-            rxBuffer += c;
+          }
+
+          // 2. Legacy ASCII fallback parser
+          if (parser.state == PARSER_SEEK_SYNC0) {
+            if (c == '\n') {
+              if (!rxBuffer.empty() && rxBuffer[0] == 'R') {
+                lastRxTime = now;
+                float hdg = 0; uint16_t uMm = 0, tL = 0, tR = 0; int mode = 0;
+                if (sscanf(rxBuffer.c_str(), "R,%f,%hu,%hu,%hu,%d", &hdg, &uMm, &tL, &tR, &mode) >= 4) {
+                  std::lock_guard<std::mutex> lk(g_roverMutex);
+                  g_rover.heading = hdg;
+                  g_rover.ultraMm = uMm;
+                  g_rover.tofFrontMm = tL;
+                  g_rover.tofRearMm = tR;
+                  g_rover.tofLeftMm = tL;
+                  g_rover.tofRightMm = tR;
+                  g_rover.mode = (uint8_t)mode;
+                  g_rover.lastUpdate = std::chrono::steady_clock::now();
+                }
+                sendto(udpSock, rxBuffer.c_str(), rxBuffer.length(), 0, (struct sockaddr*)&hostAddr, sizeof(hostAddr));
+              }
+              rxBuffer.clear();
+            } else if (c != '\r' && rxBuffer.length() < 128) {
+              rxBuffer += (char)c;
+            }
           }
         }
       }

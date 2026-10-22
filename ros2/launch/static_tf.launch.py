@@ -44,36 +44,24 @@ def generate_launch_description():
                        '--frame-id', 'camera_link', '--child-frame-id', 'camera_optical_frame']
         ),
 
-        # base_link -> tof_left_link (10 cm from centre, +33 deg = 0.575959 rad)
-        # x = 0.10 * cos(33°) = 0.083867, y = 0.10 * sin(33°) = 0.054464
+        # base_link -> tof_front_link (11 cm from centre, 0 deg)
         Node(
             package='tf2_ros',
             executable='static_transform_publisher',
-            name='tf_base_to_tof_left',
-            arguments=['--x', '0.083867', '--y', '0.054464', '--z', '0.022',
-                       '--roll', '0', '--pitch', '0', '--yaw', '0.57595865',
-                       '--frame-id', 'base_link', '--child-frame-id', 'tof_left_link']
-        ),
-
-        # base_link -> tof_right_link (10 cm from centre, -33 deg = -0.575959 rad)
-        # x = 0.10 * cos(-33°) = 0.083867, y = -0.10 * sin(33°) = -0.054464
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name='tf_base_to_tof_right',
-            arguments=['--x', '0.083867', '--y', '-0.054464', '--z', '0.022',
-                       '--roll', '0', '--pitch', '0', '--yaw', '-0.57595865',
-                       '--frame-id', 'base_link', '--child-frame-id', 'tof_right_link']
-        ),
-
-        # base_link -> ultrasonic_link (11 cm from centre, 0 deg)
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name='tf_base_to_ultrasonic',
-            arguments=['--x', '0.110', '--y', '0.0', '--z', '0.022',
+            name='tf_base_to_tof_front',
+            arguments=['--x', '0.110', '--y', '0.0', '--z', '0.040',
                        '--roll', '0', '--pitch', '0', '--yaw', '0',
-                       '--frame-id', 'base_link', '--child-frame-id', 'ultrasonic_link']
+                       '--frame-id', 'base_link', '--child-frame-id', 'tof_front_link']
+        ),
+
+        # base_link -> tof_rear_link (-10 cm from centre, 180 deg = 3.14159 rad)
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name='tf_base_to_tof_rear',
+            arguments=['--x', '-0.100', '--y', '0.0', '--z', '0.040',
+                       '--roll', '0', '--pitch', '0', '--yaw', '3.14159',
+                       '--frame-id', 'base_link', '--child-frame-id', 'tof_rear_link']
         ),
 
         # base_link -> imu_link

@@ -46,36 +46,35 @@ class TofLaserScanPublisher(Node):
         self.num_beams = self.get_parameter('scan_beams').value
 
         # Sensor positions in body frame (base_link)
-        # Left ToF: +33 deg, 10 cm from center
-        self.tof_l_x = self.tof_dist_m * math.cos(self.tof_angle_rad)  # 0.083867m
-        self.tof_l_y = self.tof_dist_m * math.sin(self.tof_angle_rad)  # 0.054464m
+        # Fixed Front ToF: 0 deg, +11 cm from center (+0.110m, 0.0m)
+        self.tof_front_x = 0.110
+        self.tof_front_y = 0.0
+        self.tof_front_yaw_rad = 0.0
 
-        # Right ToF: -33 deg, 10 cm from center
-        self.tof_r_x = self.tof_dist_m * math.cos(-self.tof_angle_rad) # 0.083867m
-        self.tof_r_y = -self.tof_dist_m * math.sin(self.tof_angle_rad) # -0.054464m
-
-        # Front Ultrasonic: 0 deg, 11 cm from center
-        self.us_x = self.cam_dist_m
-        self.us_y = 0.0
-
-        # Ultrasonic filtering & corroboration buffer (5-sample median window)
-        self.us_history = deque(maxlen=5)
-        self.us_consecutive_close = 0
+        # Fixed Rear ToF: 180 deg, -10 cm from center (-0.100m, 0.0m)
+        self.tof_rear_x = -0.100
+        self.tof_rear_y = 0.0
+        self.tof_rear_yaw_rad = math.pi
 
         # Latest readings (in meters, 0.0 = invalid / out of range)
-        self.cur_tof_l_m = 0.0
+        self.cur_tof_f_m = 0.0
         self.cur_tof_r_m = 0.0
-        self.cur_us_m = 0.0
+        self.cur_tof_l_m = 0.0  # legacy alias
+        self.cur_us_m = 0.0     # legacy alias
 
         # ROS 2 Publishers
         self.pub_scan = self.create_publisher(LaserScan, '/scan', 10)
-        self.pub_tof_l_range = self.create_publisher(Range, '/sensors/tof_left/range', 10)
-        self.pub_tof_r_range = self.create_publisher(Range, '/sensors/tof_right/range', 10)
-        self.pub_us_range = self.create_publisher(Range, '/sensors/ultrasonic/range', 10)
+        self.pub_tof_front_range = self.create_publisher(Range, '/sensors/tof_front/range', 10)
+        self.pub_tof_rear_range  = self.create_publisher(Range, '/sensors/tof_rear/range', 10)
+        self.pub_tof_l_range     = self.create_publisher(Range, '/sensors/tof_left/range', 10)   # backwards compat
+        self.pub_tof_r_range     = self.create_publisher(Range, '/sensors/tof_right/range', 10)  # backwards compat
+        self.pub_us_range        = self.create_publisher(Range, '/sensors/ultrasonic/range', 10) # backwards compat
 
         # Optional ROS 2 Subscriber fallback for range topics
-        self.sub_tof_l = self.create_subscription(Range, '/sensors/tof_left', self._cb_tof_l, 10)
-        self.sub_tof_r = self.create_subscription(Range, '/sensors/tof_right', self._cb_tof_r, 10)
+        self.sub_tof_front = self.create_subscription(Range, '/sensors/tof_front', self._cb_tof_f, 10)
+        self.sub_tof_rear  = self.create_subscription(Range, '/sensors/tof_rear', self._cb_tof_rear, 10)
+        self.sub_tof_l     = self.create_subscription(Range, '/sensors/tof_left', self._cb_tof_l, 10)
+        self.sub_tof_r     = self.create_subscription(Range, '/sensors/tof_right', self._cb_tof_r, 10)
         self.sub_us = self.create_subscription(Range, '/sensors/ultrasonic', self._cb_us, 10)
 
         # Non-blocking UDP socket to receive live packets directly from rover
@@ -93,50 +92,31 @@ class TofLaserScanPublisher(Node):
         dt = 1.0 / self.rate_hz
         self.timer = self.create_timer(dt, self._on_timer)
 
-    def _cb_tof_l(self, msg: Range):
+    def _cb_tof_f(self, msg: Range):
         if self.min_range <= msg.range <= self.max_range:
+            self.cur_tof_f_m = msg.range
             self.cur_tof_l_m = msg.range
         else:
+            self.cur_tof_f_m = 0.0
             self.cur_tof_l_m = 0.0
 
-    def _cb_tof_r(self, msg: Range):
+    def _cb_tof_rear(self, msg: Range):
         if self.min_range <= msg.range <= self.max_range:
             self.cur_tof_r_m = msg.range
         else:
             self.cur_tof_r_m = 0.0
 
+    def _cb_tof_l(self, msg: Range):
+        self._cb_tof_f(msg)
+
+    def _cb_tof_r(self, msg: Range):
+        self._cb_tof_rear(msg)
+
     def _cb_us(self, msg: Range):
-        self._filter_ultrasonic(msg.range)
-
-    def _filter_ultrasonic(self, raw_m: float):
-        """
-        Demotes and filters unreliable front ultrasonic readings.
-        1. 5-sample median filter rejection.
-        2. Requires corroboration from ToF when distance is < 0.45m.
-           Does not allow ultrasonic alone to report emergency stopping obstacles.
-        """
-        if raw_m < 0.03 or raw_m > 3.5:
-            self.cur_us_m = 0.0
-            self.us_consecutive_close = 0
-            return
-
-        self.us_history.append(raw_m)
-        med_m = sorted(self.us_history)[len(self.us_history) // 2]
-
-        if med_m < 0.45:
-            # Require ToF corroboration (either ToF detecting obstacle < 0.65m)
-            # Front ultrasonic alone must not trigger a stop
-            tof_corroborates = (0.03 < self.cur_tof_l_m < 0.65) or (0.03 < self.cur_tof_r_m < 0.65)
-            if tof_corroborates:
-                self.cur_us_m = med_m
-            else:
-                # Demote: uncorroborated close ultrasonic is suppressed so it cannot trigger a stop alone
-                self.cur_us_m = 0.0
-        else:
-            self.cur_us_m = med_m
+        pass
 
     def _poll_udp(self):
-        """Reads UDP telemetry packets from ESP32 rover."""
+        """Reads UDP telemetry packets from RP2040 rover."""
         if not self.sock:
             return
         while True:
@@ -147,21 +127,19 @@ class TofLaserScanPublisher(Node):
                     # Format: R,heading,ultraMm,tofMm[0],tofMm[1],mode
                     parts = txt.split(",")
                     if len(parts) >= 5:
-                        us_mm = float(parts[2])
-                        tof_l_mm = float(parts[3])
+                        tof_f_mm = float(parts[3])
                         tof_r_mm = float(parts[4])
 
-                        if 25 <= tof_l_mm <= 2000:
-                            self.cur_tof_l_m = tof_l_mm / 1000.0
+                        if 25 <= tof_f_mm <= 2000:
+                            self.cur_tof_f_m = tof_f_mm / 1000.0
                         else:
-                            self.cur_tof_l_m = 0.0
+                            self.cur_tof_f_m = 0.0
+                        self.cur_tof_l_m = self.cur_tof_f_m
 
                         if 25 <= tof_r_mm <= 2000:
                             self.cur_tof_r_m = tof_r_mm / 1000.0
                         else:
                             self.cur_tof_r_m = 0.0
-
-                        self._filter_ultrasonic(us_mm / 1000.0)
             except (BlockingIOError, socket.error):
                 break
 
@@ -177,40 +155,31 @@ class TofLaserScanPublisher(Node):
         self._poll_udp()
         now = self.get_clock().now().to_msg()
 
-        # 1. Publish sensor_msgs/msg/Range for ToF Left
-        r_l = Range()
-        r_l.header.stamp = now
-        r_l.header.frame_id = 'tof_left_link'
-        r_l.radiation_type = Range.INFRARED
-        r_l.field_of_view = self.tof_fov
-        r_l.min_range = self.min_range
-        r_l.max_range = self.max_range
-        r_l.range = self.cur_tof_l_m if self.cur_tof_l_m > 0 else float('inf')
-        self.pub_tof_l_range.publish(r_l)
+        # 1. Publish sensor_msgs/msg/Range for ToF Front
+        r_f = Range()
+        r_f.header.stamp = now
+        r_f.header.frame_id = 'tof_front_link'
+        r_f.radiation_type = Range.INFRARED
+        r_f.field_of_view = self.tof_fov
+        r_f.min_range = self.min_range
+        r_f.max_range = self.max_range
+        r_f.range = self.cur_tof_f_m if self.cur_tof_f_m > 0 else float('inf')
+        self.pub_tof_front_range.publish(r_f)
+        self.pub_tof_l_range.publish(r_f)
 
-        # 2. Publish sensor_msgs/msg/Range for ToF Right
+        # 2. Publish sensor_msgs/msg/Range for ToF Rear
         r_r = Range()
         r_r.header.stamp = now
-        r_r.header.frame_id = 'tof_right_link'
+        r_r.header.frame_id = 'tof_rear_link'
         r_r.radiation_type = Range.INFRARED
         r_r.field_of_view = self.tof_fov
         r_r.min_range = self.min_range
         r_r.max_range = self.max_range
         r_r.range = self.cur_tof_r_m if self.cur_tof_r_m > 0 else float('inf')
+        self.pub_tof_rear_range.publish(r_r)
         self.pub_tof_r_range.publish(r_r)
 
-        # 3. Publish sensor_msgs/msg/Range for Ultrasonic
-        r_u = Range()
-        r_u.header.stamp = now
-        r_u.header.frame_id = 'ultrasonic_link'
-        r_u.radiation_type = Range.ULTRASOUND
-        r_u.field_of_view = 0.523  # ~30 deg
-        r_u.min_range = self.min_range
-        r_u.max_range = 3.50
-        r_u.range = self.cur_us_m if self.cur_us_m > 0 else float('inf')
-        self.pub_us_range.publish(r_u)
-
-        # 4. Synthesize 360-degree 2D LaserScan projected onto /scan
+        # 3. Synthesize 360-degree 2D LaserScan projected onto /scan
         scan = LaserScan()
         scan.header.stamp = now
         scan.header.frame_id = 'scan'
@@ -227,26 +196,20 @@ class TofLaserScanPublisher(Node):
             if d_m < self.min_range or d_m > self.max_range:
                 return
             r, th = self._project_point(orig_x, orig_y, yaw_rad, d_m)
-            # Find center beam
             idx = int(round((th - scan.angle_min) / scan.angle_increment))
-            # Spread beam across sensor FOV cone
             spread_beams = max(1, int(round(spread_rad / scan.angle_increment)))
             for offset in range(-spread_beams, spread_beams + 1):
                 b_idx = (idx + offset) % self.num_beams
                 if r < scan.ranges[b_idx]:
                     scan.ranges[b_idx] = r
 
-        # Project Left ToF (+33 deg, 10cm from center)
-        if self.cur_tof_l_m > 0:
-            put_hit(self.tof_l_x, self.tof_l_y, self.tof_angle_rad, self.cur_tof_l_m, spread_rad=0.12)
+        # Project Front ToF (0 deg, 11cm from center)
+        if self.cur_tof_f_m > 0:
+            put_hit(self.tof_front_x, self.tof_front_y, self.tof_front_yaw_rad, self.cur_tof_f_m, spread_rad=0.15)
 
-        # Project Right ToF (-33 deg, 10cm from center)
+        # Project Rear ToF (180 deg, -10cm from center)
         if self.cur_tof_r_m > 0:
-            put_hit(self.tof_r_x, self.tof_r_y, -self.tof_angle_rad, self.cur_tof_r_m, spread_rad=0.12)
-
-        # Project Ultrasonic (Front 0 deg, 11cm from center, demoted/corroborated)
-        if self.cur_us_m > 0:
-            put_hit(self.us_x, self.us_y, 0.0, self.cur_us_m, spread_rad=0.10)
+            put_hit(self.tof_rear_x, self.tof_rear_y, self.tof_rear_yaw_rad, self.cur_tof_r_m, spread_rad=0.15)
 
         self.pub_scan.publish(scan)
 

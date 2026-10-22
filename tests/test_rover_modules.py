@@ -220,8 +220,33 @@ class ImpactDetector:
         if now_ms >= self.impactUntil and self.impactDir != 0:
             self.impactDir = 0
 
+class DeadReckoningSim:
+    def __init__(self):
+        self.odomX = 0.0  # cm
+        self.odomY = 0.0  # cm
+
+    def step(self, fwd_speed, strafe_speed, heading_deg, dyn_jerk, gz, stationary, dt=0.01):
+        is_physically_moving = (not stationary) and (dyn_jerk > 0.045 or abs(gz) > 0.06)
+        vx = 0.0
+        vy = 0.0
+        effort = max(abs(fwd_speed), abs(strafe_speed))
+        if is_physically_moving and effort >= 12.0:
+            scale = (effort - 12.0) / effort
+            vx = fwd_speed * 8.5 * scale    # mm/s forward along heading
+            vy = strafe_speed * 8.5 * scale # mm/s lateral strafe
+        th = heading_deg * math.pi / 180.0
+        self.odomX += (vx * math.cos(th) - vy * math.sin(th)) * dt / 10.0  # cm
+        self.odomY += (vx * math.sin(th) + vy * math.cos(th)) * dt / 10.0  # cm
+        return self.odomX, self.odomY
+
+def mecanum_reconstruct(w):
+    # w: [FL, FR, RL, RR]
+    fwd_speed = (w[0] + w[1] + w[2] + w[3]) / 4.0
+    strafe_speed = (w[0] - w[1] - w[2] + w[3]) / 4.0
+    return fwd_speed, strafe_speed
+
 # ==============================================================================
-# 4. VL53L0X 5-Sample Median Filter with Spike Rejection
+# 4. VL53L0X 5-Sample Median Filter with Spike Rejection & Obstacle Clear
 # ==============================================================================
 
 class ToFFilter:
@@ -230,33 +255,43 @@ class ToFFilter:
         self.max_mm = max_mm
         self.max_spike = max_spike
         self.buffer = []
-        self.last_valid = 0
-        self.last_update_ms = 0
+        self.front_mm = 0
+        self.misses = 0
+        self.spike_count = 0
+        self.last_valid_ms = 0
 
-    def add_reading(self, raw_mm, now_ms):
-        # Range gating
-        if raw_mm < self.min_mm or raw_mm > self.max_mm:
-            return self.last_valid
+    def add_reading(self, raw_mm, now_ms, status=0):
+        if status != 4 and self.min_mm <= raw_mm <= self.max_mm:
+            self.misses = 0
+            self.last_valid_ms = now_ms
 
-        # Spike rejection against previous valid reading
-        if self.last_valid > 0 and len(self.buffer) >= 3:
-            if abs(raw_mm - self.last_valid) > self.max_spike:
-                # Spike: don't immediately adopt, but store in window
-                pass
+            is_spike = False
+            if self.front_mm > 0 and abs(raw_mm - self.front_mm) > self.max_spike:
+                self.spike_count += 1
+                if self.spike_count < 2:
+                    is_spike = True
+                else:
+                    self.buffer = [raw_mm] * 5
+                    self.spike_count = 0
+                    self.front_mm = raw_mm
+            else:
+                self.spike_count = 0
 
-        self.buffer.append(raw_mm)
-        if len(self.buffer) > 5:
-            self.buffer.pop(0)
-
-        # 5-sample median
-        sorted_buf = sorted(self.buffer)
-        median = sorted_buf[len(sorted_buf) // 2]
-        self.last_valid = median
-        self.last_update_ms = now_ms
-        return self.last_valid
+            if not is_spike:
+                self.buffer.append(raw_mm)
+                if len(self.buffer) > 5:
+                    self.buffer.pop(0)
+                sorted_b = sorted(self.buffer)
+                self.front_mm = sorted_b[len(sorted_b) // 2]
+        else:
+            self.misses += 1
+            if self.misses >= 4:
+                self.front_mm = 0
+                self.buffer = []
+        return self.front_mm
 
     def is_stalled(self, now_ms, timeout_ms=2500):
-        if self.last_update_ms > 0 and (now_ms - self.last_update_ms > timeout_ms):
+        if self.last_valid_ms > 0 and (now_ms - self.last_valid_ms > timeout_ms):
             return True
         return False
 
@@ -414,6 +449,63 @@ class TestImpactAndDeadReckoning(unittest.TestCase):
         detector.update([0.0, -1.0, 1.0], [0.0, 0.0, 0.0], now, motion_active=True)
         self.assertEqual(detector.impactDir, 0)  # Suppressed
 
+    def test_dead_reckoning_stationary_gate(self):
+        dr = DeadReckoningSim()
+        # Full commanded forward effort, but stationary flag is TRUE (rover resting)
+        for _ in range(50):
+            dr.step(fwd_speed=100.0, strafe_speed=0.0, heading_deg=0.0,
+                    dyn_jerk=0.1, gz=0.0, stationary=True)
+        self.assertEqual(dr.odomX, 0.0)
+        self.assertEqual(dr.odomY, 0.0)
+
+    def test_dead_reckoning_low_jerk_gate(self):
+        dr = DeadReckoningSim()
+        # Commanded effort, stationary is False, but jerk & yaw rate are below physical motion gate (stuck)
+        for _ in range(50):
+            dr.step(fwd_speed=100.0, strafe_speed=0.0, heading_deg=0.0,
+                    dyn_jerk=0.02, gz=0.01, stationary=False)
+        self.assertEqual(dr.odomX, 0.0)
+        self.assertEqual(dr.odomY, 0.0)
+
+    def test_dead_reckoning_effort_deadband(self):
+        dr = DeadReckoningSim()
+        # Effort < 12% produces 0 displacement
+        for _ in range(50):
+            dr.step(fwd_speed=10.0, strafe_speed=0.0, heading_deg=0.0,
+                    dyn_jerk=0.1, gz=0.0, stationary=False)
+        self.assertEqual(dr.odomX, 0.0)
+        self.assertEqual(dr.odomY, 0.0)
+
+    def test_dead_reckoning_forward_accumulation(self):
+        dr = DeadReckoningSim()
+        # 100 steps of 0.01s (1.0 second) @ 100% fwd speed, heading = 0 deg (North)
+        for _ in range(100):
+            dr.step(fwd_speed=100.0, strafe_speed=0.0, heading_deg=0.0,
+                    dyn_jerk=0.1, gz=0.0, stationary=False, dt=0.01)
+        # Expected: scale = (100 - 12)/100 = 0.88, vx = 100 * 8.5 * 0.88 = 748 mm/s = 74.8 cm/s
+        self.assertAlmostEqual(dr.odomX, 74.8, places=1)
+        self.assertAlmostEqual(dr.odomY, 0.0, places=2)
+
+    def test_dead_reckoning_strafe_accumulation(self):
+        dr = DeadReckoningSim()
+        # 100 steps of 0.01s (1.0 second) @ 100% strafe right speed, heading = 0 deg
+        for _ in range(100):
+            dr.step(fwd_speed=0.0, strafe_speed=100.0, heading_deg=0.0,
+                    dyn_jerk=0.1, gz=0.0, stationary=False, dt=0.01)
+        # Expected: vy = 748 mm/s = 74.8 cm/s lateral
+        self.assertAlmostEqual(dr.odomX, 0.0, places=2)
+        self.assertAlmostEqual(dr.odomY, 74.8, places=1)
+
+    def test_dead_reckoning_rotated_trajectory(self):
+        dr = DeadReckoningSim()
+        # 100 steps @ 100% forward speed with heading = 90 deg (facing East)
+        for _ in range(100):
+            dr.step(fwd_speed=100.0, strafe_speed=0.0, heading_deg=90.0,
+                    dyn_jerk=0.1, gz=0.0, stationary=False, dt=0.01)
+        # Moving forward with heading 90 deg accumulates in odomY (East), odomX stays 0
+        self.assertAlmostEqual(dr.odomX, 0.0, places=2)
+        self.assertAlmostEqual(dr.odomY, 74.8, places=1)
+
 
 class TestToFFilter(unittest.TestCase):
     def test_median_and_range_gating(self):
@@ -429,12 +521,130 @@ class TestToFFilter(unittest.TestCase):
             res = tof.add_reading(val, now)
         self.assertEqual(res, 100)
 
+    def test_consecutive_misses_clear_obstacle(self):
+        tof = ToFFilter(min_mm=30, max_mm=1800)
+        now = 100
+        # Establish stable reading at 150mm
+        for _ in range(5):
+            now += 30
+            tof.add_reading(150, now)
+        self.assertEqual(tof.front_mm, 150)
+
+        # Obstacle moves away: sensor reports status 4 (out of bounds)
+        for i in range(3):
+            now += 30
+            tof.add_reading(2000, now, status=4)
+            # Not cleared yet (< 4 misses)
+            self.assertEqual(tof.front_mm, 150)
+
+        # 4th miss clears the reading to 0 (path clear)
+        now += 30
+        res = tof.add_reading(2000, now, status=4)
+        self.assertEqual(res, 0)
+        self.assertEqual(tof.front_mm, 0)
+
+    def test_spike_rejection(self):
+        tof = ToFFilter(min_mm=30, max_mm=1800, max_spike=250)
+        now = 100
+        for _ in range(5):
+            now += 30
+            tof.add_reading(300, now)
+        self.assertEqual(tof.front_mm, 300)
+
+        # 1-frame spurious spike at 1000 mm (> 250 mm spike)
+        now += 30
+        res = tof.add_reading(1000, now)
+        self.assertEqual(res, 300)  # Rejected
+
+        # Step change confirmed: frame 1 rejected as spike, frames 2, 3, 4 populate median buffer
+        for _ in range(3):
+            now += 30
+            res = tof.add_reading(1000, now)
+        self.assertEqual(res, 1000)  # Adopted step change after median majority
+
     def test_stall_detection(self):
         tof = ToFFilter()
         now = 1000
         tof.add_reading(150, now)
         self.assertFalse(tof.is_stalled(now + 2000))
         self.assertTrue(tof.is_stalled(now + 2600))  # > 2500ms stall timeout
+
+
+class TestKinematicsAndConfig(unittest.TestCase):
+    def test_velocity_reconstruction(self):
+        # Forward command -> reconstruct forward speed
+        w_fwd = mecanum_mix(x=0, y=100, z=0, spd=100)
+        fwd, strafe = mecanum_reconstruct(w_fwd)
+        self.assertAlmostEqual(fwd, 100.0)
+        self.assertAlmostEqual(strafe, 0.0)
+
+        # Strafe right command -> reconstruct strafe speed
+        w_strafe = mecanum_mix(x=100, y=0, z=0, spd=100)
+        fwd, strafe = mecanum_reconstruct(w_strafe)
+        self.assertAlmostEqual(fwd, 0.0)
+        self.assertAlmostEqual(strafe, 100.0)
+
+        # Combined command
+        w_comb = mecanum_mix(x=50, y=50, z=0, spd=100)
+        fwd, strafe = mecanum_reconstruct(w_comb)
+        self.assertAlmostEqual(fwd, 50.0)
+        self.assertAlmostEqual(strafe, 50.0)
+
+    def test_config_clamping(self):
+        # min_duty clamped to [0, 60000]
+        md_high = 70000
+        self.assertEqual(min(60000, max(0, md_high)), 60000)
+        md_low = -500
+        self.assertEqual(min(60000, max(0, md_low)), 0)
+
+        # accel clamped to [1.0, 100.0]
+        ac_low = 0.0
+        self.assertEqual(min(100.0, max(1.0, ac_low)), 1.0)
+
+        # spin_ms clamped to [200, 10000]
+        sp_low = 50
+        self.assertEqual(min(10000, max(200, sp_low)), 200)
+
+
+class TestProtocolAndStreamIsolation(unittest.TestCase):
+    def test_binary_packet_with_embedded_ascii_chars(self):
+        # Create a valid binary payload containing ASCII control bytes: 'S', '\n', '\r'
+        payload = b"S\n\rD,100,100,0,100\n"
+        frame = pack_frame(0x01, payload)
+
+        parser = RoverFrameParser()
+        ascii_buf = bytearray()
+        ascii_lines = []
+
+        # Simulate fixed process_serial_stream logic
+        for b in frame:
+            if parser.feed(b):
+                ascii_buf = bytearray()
+
+            if parser.state == 0:  # PARSER_SEEK_SYNC0
+                if b in (ord("\n"), ord("\r")):
+                    if len(ascii_buf) > 0:
+                        ascii_lines.append(bytes(ascii_buf).decode("ascii", "ignore"))
+                        ascii_buf = bytearray()
+                elif 32 <= b <= 126:
+                    ascii_buf.append(b)
+
+        # Frame should be completely received with zero CRC errors
+        self.assertEqual(parser.rx_frames, 1)
+        self.assertEqual(bytes(parser.payload), payload)
+        # CRITICAL: No false ASCII command was triggered by binary payload bytes!
+        self.assertEqual(len(ascii_lines), 0)
+
+    def test_encoder_pkt_packing(self):
+        # EncoderPkt: valid_mask(B) + 4x enc_count(i)
+        valid_mask = 0x1F  # All 4 wheels + single-encoder
+        counts = [1250, -840, 1260, -835]
+        pkt = struct.pack("<Biiii", valid_mask, *counts)
+        self.assertEqual(len(pkt), 17)
+
+        unpacked_mask, c0, c1, c2, c3 = struct.unpack("<Biiii", pkt)
+        self.assertEqual(unpacked_mask, 0x1F)
+        self.assertEqual([c0, c1, c2, c3], counts)
 
 
 if __name__ == "__main__":

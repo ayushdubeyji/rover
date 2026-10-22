@@ -17,46 +17,55 @@ if str(_ros2_dir) not in sys.path:
     sys.path.insert(0, str(_ros2_dir))
 
 from ros2_rover.ld2402_radar_node import LD2402Protocol
-from ros2_rover.doa_srp_phat_node import SRPPhatCalculator
+from ros2_rover.doa_srp_phat_node import SRPPhatCalculator, StereoDoACalculator, DoASrpPhatNode
 from ros2_rover.voice_follower_node import VoiceFollowerStateMachine, FollowerState
 
 
 
 def test_sensor_geometry():
-    cam_dist = 0.110
-    tof_dist = 0.100
-    tof_yaw_deg = 33.0
-    tof_yaw_rad = math.radians(tof_yaw_deg)
+    # New fixed ToF layout: Front (0°, +11cm), Rear (180°, -10cm)
+    tof_front_x = 0.110
+    tof_front_y = 0.0
+    tof_front_yaw_rad = 0.0
 
-    tof_l_x = tof_dist * math.cos(tof_yaw_rad)
-    tof_l_y = tof_dist * math.sin(tof_yaw_rad)
+    tof_rear_x = -0.100
+    tof_rear_y = 0.0
+    tof_rear_yaw_rad = 3.14159
 
-    tof_r_x = tof_dist * math.cos(-tof_yaw_rad)
-    tof_r_y = tof_dist * math.sin(-tof_yaw_rad)
+    assert round(tof_front_x, 3) == 0.110, "Front ToF must be 11cm from centre"
+    assert round(tof_front_y, 3) == 0.0, "Front ToF must be on centerline"
+    assert round(tof_front_yaw_rad, 3) == 0.0, "Front ToF yaw must be 0 deg"
 
-    assert round(cam_dist, 3) == 0.110, "Camera must be 11cm from centre"
-    assert round(tof_l_x, 6) == 0.083867, f"Expected tof_l_x ~0.083867, got {tof_l_x}"
-    assert round(tof_l_y, 6) == 0.054464, f"Expected tof_l_y ~0.054464, got {tof_l_y}"
-    assert round(tof_r_x, 6) == 0.083867, f"Expected tof_r_x ~0.083867, got {tof_r_x}"
-    assert round(tof_r_y, 6) == -0.054464, f"Expected tof_r_y ~-0.054464, got {tof_r_y}"
+    assert round(tof_rear_x, 3) == -0.100, "Rear ToF must be -10cm from centre"
+    assert round(tof_rear_y, 3) == 0.0, "Rear ToF must be on centerline"
+    assert round(tof_rear_yaw_rad, 5) == 3.14159, "Rear ToF yaw must be 3.14159 rad"
 
 
 def test_tof_projection():
-    tof_dist = 0.100
-    tof_yaw_rad = math.radians(33.0)
-    origin_x = tof_dist * math.cos(tof_yaw_rad)
-    origin_y = tof_dist * math.sin(tof_yaw_rad)
+    # Front ToF (0°, +11cm)
+    front_origin_x = 0.110
+    front_origin_y = 0.0
     reading_m = 0.500  # 50cm
 
-    # Body frame hit
-    hit_x = origin_x + reading_m * math.cos(tof_yaw_rad)
-    hit_y = origin_y + reading_m * math.sin(tof_yaw_rad)
+    hit_f_x = front_origin_x + reading_m * math.cos(0.0)
+    hit_f_y = front_origin_y + reading_m * math.sin(0.0)
+    r_f = math.hypot(hit_f_x, hit_f_y)
+    th_f = math.atan2(hit_f_y, hit_f_x)
 
-    r = math.hypot(hit_x, hit_y)
-    th = math.atan2(hit_y, hit_x)
+    assert abs(r_f - 0.610) < 0.001, f"Expected projected range ~0.610m, got {r_f}"
+    assert abs(th_f - 0.0) < 0.001, "Angle from center must match 0 deg ray"
 
-    assert 0.59 < r < 0.61, f"Expected projected range ~0.60m, got {r}"
-    assert abs(math.degrees(th) - 33.0) < 0.001, "Angle from center must match 33 deg ray"
+    # Rear ToF (180°, -10cm)
+    rear_origin_x = -0.100
+    rear_origin_y = 0.0
+
+    hit_r_x = rear_origin_x + reading_m * math.cos(math.pi)
+    hit_r_y = rear_origin_y + reading_m * math.sin(math.pi)
+    r_r = math.hypot(hit_r_x, hit_r_y)
+    th_r = math.atan2(hit_r_y, hit_r_x)
+
+    assert abs(r_r - 0.600) < 0.001, f"Expected projected range ~0.600m, got {r_r}"
+    assert abs(abs(th_r) - math.pi) < 0.001, "Angle from center must match 180 deg ray"
 
 
 def test_ultrasonic_filter():
@@ -236,30 +245,36 @@ def test_ld2402_radar_protocol():
     assert data_empty['distance_m'] == 0.0
 
     # 4. Stream corruption resilience & recovery
-    from ros2_rover.ld2402_radar_node import LD2402RadarNode
-    import rclpy
-    need_shutdown = False
-    if not rclpy.ok():
-        rclpy.init()
-        need_shutdown = True
-    node = None
     try:
-        node = LD2402RadarNode()
-        corrupted_stream = (
-            b'\xaa\xbb\xcc' +                    # leading line noise
-            b'\xf4\xf3\xf2\xf1\x10\x00' +        # false header with wrong length
-            b'\x00' * 16 +                       # garbage bytes
-            eng_frame                            # valid 141-byte frame
-        )
-        parsed_frames = node.process_incoming_bytes(corrupted_stream)
-        assert len(parsed_frames) == 1, f"Expected 1 parsed frame despite stream noise, got {len(parsed_frames)}"
-        assert parsed_frames[0]['distance_m'] == 1.85
-        assert len(node.rx_buffer) == 0, f"Expected clean rx_buffer after parsing, got {len(node.rx_buffer)}"
-    finally:
-        if node is not None:
-            node.destroy_node()
-        if need_shutdown and rclpy.ok():
-            rclpy.shutdown()
+        import rclpy
+        from ros2_rover.ld2402_radar_node import LD2402RadarNode
+        has_rclpy = True
+    except ImportError:
+        has_rclpy = False
+
+    if has_rclpy:
+        need_shutdown = False
+        if not rclpy.ok():
+            rclpy.init()
+            need_shutdown = True
+        node = None
+        try:
+            node = LD2402RadarNode()
+            corrupted_stream = (
+                b'\xaa\xbb\xcc' +                    # leading line noise
+                b'\xf4\xf3\xf2\xf1\x10\x00' +        # false header with wrong length
+                b'\x00' * 16 +                       # garbage bytes
+                eng_frame                            # valid 141-byte frame
+            )
+            parsed_frames = node.process_incoming_bytes(corrupted_stream)
+            assert len(parsed_frames) == 1, f"Expected 1 parsed frame despite stream noise, got {len(parsed_frames)}"
+            assert parsed_frames[0]['distance_m'] == 1.85
+            assert len(node.rx_buffer) == 0, f"Expected clean rx_buffer after parsing, got {len(node.rx_buffer)}"
+        finally:
+            if node is not None:
+                node.destroy_node()
+            if need_shutdown and rclpy.ok():
+                rclpy.shutdown()
 
 
 def test_voice_follower_fsm_and_ego_noise_gating():
@@ -366,6 +381,63 @@ def test_pico_3mic_pio_demux():
     assert mic1_pcm16 == -1, f"Expected -1 (0xFFFF), got {mic1_pcm16}"
 
 
+def test_2mic_stereo_doa_and_radar_disambiguation():
+    """Verify 2-mic direct Pi I2S stereo DOA accuracy and radar front/back disambiguation."""
+    calc = StereoDoACalculator(sample_rate=16000, n_fft=1024, d_meters=0.055)
+    fs = 16000
+    t = np.arange(1024) / fs
+    source_sig = sum(np.sin(2 * np.pi * f * t) for f in [500, 850, 1250, 1750, 2300])
+
+    specs = np.fft.rfft(source_sig)
+    freqs = np.fft.rfftfreq(1024, 1.0 / fs)
+
+    # Test cases: (target_bearing_deg, radar_presence, expected_output_deg)
+    test_cases = [
+        (30.0, True, 30.0),       # Front-Left (+30°), radar detects presence -> 30°
+        (150.0, False, 150.0),    # Rear-Left (+150°), identical delay, radar clear -> disambiguates to 150°
+        (-45.0, True, -45.0),     # Front-Right (-45°), radar detects presence -> -45°
+        (-135.0, False, -135.0),  # Rear-Right (-135°), identical delay, radar clear -> disambiguates to -135°
+        (0.0, True, 0.0),         # Straight ahead (0°), radar detects presence -> 0°
+        (180.0, False, 180.0),    # Directly behind (180°), radar clear -> disambiguates to 180°
+    ]
+
+    mic_pos = np.array([[0.0, 0.055 / 2.0], [0.0, -0.055 / 2.0]])
+
+    for target_deg, radar_pres, expected_deg in test_cases:
+        target_rad = math.radians(target_deg)
+        u = np.array([math.cos(target_rad), math.sin(target_rad)])
+
+        chans = []
+        for m in range(2):
+            pm = mic_pos[m]
+            tm = -float(np.dot(pm, u)) / calc.c
+            phase = -2.0 * np.pi * freqs * tm
+            ch_spec = specs * np.exp(1j * phase)
+            chans.append(np.fft.irfft(ch_spec, n=1024))
+
+        audio_2ch = np.stack(chans)
+        est_deg, conf, srp = calc.estimate_azimuth(audio_2ch, radar_presence=radar_pres)
+
+        err = abs(est_deg - expected_deg)
+        if err > 180.0:
+            err = 360.0 - err
+
+        assert err < 3.0, f"2-mic DOA error {err:.2f}° exceeded 3.0° for target {target_deg}° (expected {expected_deg}°, got {est_deg:.2f}°)"
+        assert conf > 0.60, f"Expected high confidence (>0.60) for 2-mic DOA, got {conf:.2f}"
+
+    # Also verify full DoASrpPhatNode in 2-mic stereo mode with VAD gating
+    node = DoASrpPhatNode(array_mode='2mic_stereo', capture_mode='topic')
+    u30 = np.array([math.cos(math.radians(30.0)), math.sin(math.radians(30.0))])
+    audio_test = np.stack([
+        np.fft.irfft(specs * np.exp(-1j * 2 * np.pi * freqs * (-float(np.dot(mic_pos[0], u30)) / calc.c)), n=1024),
+        np.fft.irfft(specs * np.exp(-1j * 2 * np.pi * freqs * (-float(np.dot(mic_pos[1], u30)) / calc.c)), n=1024)
+    ])
+    az_out, conf_out, vad_out = node.process_audio_buffer(audio_test, radar_presence=True)
+    assert vad_out is True, "VAD should trigger on speech signal"
+    assert abs(az_out - 30.0) < 3.0, f"Expected ~30.0 deg from node, got {az_out}"
+    assert conf_out > 0.60, f"Expected high confidence, got {conf_out}"
+
+
 if __name__ == '__main__':
     test_sensor_geometry()
     test_tof_projection()
@@ -373,8 +445,10 @@ if __name__ == '__main__':
     test_odometry_gating()
     test_mic_and_radar_geometry()
     test_srp_phat_doa_accuracy_and_unambiguity()
+    test_2mic_stereo_doa_and_radar_disambiguation()
     test_ld2402_radar_protocol()
     test_voice_follower_fsm_and_ego_noise_gating()
     test_pico_3mic_pio_demux()
-    print("ALL 9 TESTS PASSED SUCCESSFULLY!")
+    print("ALL 10 TESTS PASSED SUCCESSFULLY!")
+
 

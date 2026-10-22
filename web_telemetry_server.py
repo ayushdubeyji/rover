@@ -345,14 +345,11 @@ def update_sensory_memory(rx_m: float, ry_m: float, hd_deg: float, us_mm: int, t
     # 3. Project physical + visual camera hits into world coordinates
     hd_rad = math.radians(hd_deg)
     # Sensor offsets (sx, sy in meters) and beam angles (rel_ang_deg)
-    # Camera / US: 11 cm from centre at front (0 deg)
-    # ToF: 10 cm from centre at approx 33 deg left/right
-    tof_l_x = 0.100 * math.cos(math.radians(33.0))
-    tof_l_y = 0.100 * math.sin(math.radians(33.0))
+    # Front ToF: 11 cm from centre at front (0 deg)
+    # Rear ToF: 10 cm from centre at rear (180 deg)
     readings = [
-        (us_mm, 0.0, 0.110, 0.0),               # Front Center Ultrasonic (0 deg, 11cm)
-        (tof_l_mm, 33.0, tof_l_x, tof_l_y),     # Front Left ToF (+33 deg, 10cm)
-        (tof_r_mm, -33.0, tof_l_x, -tof_l_y)    # Front Right ToF (-33 deg, 10cm)
+        (tof_l_mm, 0.0, 0.110, 0.0),            # Front Center ToF (0 deg, 11cm)
+        (tof_r_mm, 180.0, -0.100, 0.0)          # Rear Center ToF (180 deg, 10cm)
     ]
 
     pi_cam = latest_telemetry.get("pi_cam", {})

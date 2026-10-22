@@ -299,7 +299,7 @@
                 <button class="btn-mode" data-mode="9" onclick="setMode(9)" style="border-color: #f59e0b; color: #f59e0b;">9. Full Auto (VFH+)</button>
             </div>
             <div style="margin-top: 8px; display: flex; justify-content: space-between; align-items: center;">
-                <span style="font-size: 0.78rem; color: #94a3b8;">Crash Protection (±33° ToF + 0° US)</span>
+                <span style="font-size: 0.78rem; color: #94a3b8;">Crash Protection (Front 0° & Rear 180° ToF)</span>
                 <button id="btn-crash-prot" onclick="toggleCrashProt()" style="background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid #10b981; padding: 4px 10px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; cursor: pointer;">ON (ALL MODES)</button>
             </div>
 
@@ -416,7 +416,7 @@
                     <div class="stat-label">Fused Yaw / Mag</div>
                 </div>
                 <div class="stat-box">
-                    <div class="stat-value" id="val-range">US: -- ToF: --</div>
+                    <div class="stat-value" id="val-range">Front: -- Rear: --</div>
                     <div class="stat-label">Range Sensors</div>
                 </div>
                 <div class="stat-box">
@@ -1411,43 +1411,27 @@
 
                 const hitsToProcess = [];
 
-                // Left ToF: mount at 8.39cm fwd, 5.45cm left (-right), beam angle +33° (+0.57596 rad)
+                // Front ToF: mount at 11cm fwd (0 deg)
                 if (dL !== null && dL >= 0.03 && dL <= 1.5) {
-                    const mX = rPosX + fwdX * 0.0839 - rightX * 0.0545;
-                    const mZ = rPosZ + fwdZ * 0.0839 - rightZ * 0.0545;
-                    const bYaw = rYaw + 0.57596;
-                    const bDirX = -Math.sin(bYaw), bDirZ = -Math.cos(bYaw);
+                    const mX = rPosX + fwdX * 0.110;
+                    const mZ = rPosZ + fwdZ * 0.110;
                     hitsToProcess.push({
                         mX, mZ,
-                        hX: mX + bDirX * dL,
-                        hZ: mZ + bDirZ * dL,
+                        hX: mX + fwdX * dL,
+                        hZ: mZ + fwdZ * dL,
                         dist: dL
                     });
                 }
 
-                // Right ToF: mount at 8.39cm fwd, 5.45cm right (+right), beam angle -33° (-0.57596 rad)
+                // Rear ToF: mount at 10cm rear (180 deg)
                 if (dR !== null && dR >= 0.03 && dR <= 1.5) {
-                    const mX = rPosX + fwdX * 0.0839 + rightX * 0.0545;
-                    const mZ = rPosZ + fwdZ * 0.0839 + rightZ * 0.0545;
-                    const bYaw = rYaw - 0.57596;
-                    const bDirX = -Math.sin(bYaw), bDirZ = -Math.cos(bYaw);
+                    const mX = rPosX - fwdX * 0.100;
+                    const mZ = rPosZ - fwdZ * 0.100;
                     hitsToProcess.push({
                         mX, mZ,
-                        hX: mX + bDirX * dR,
-                        hZ: mZ + bDirZ * dR,
+                        hX: mX - fwdX * dR,
+                        hZ: mZ - fwdZ * dR,
                         dist: dR
-                    });
-                }
-
-                // Front Ultrasonic: only if corroborated by ToF to reject multipath
-                if (dU !== null && dU >= 0.03 && dU <= 1.5 && (dL !== null || dR !== null)) {
-                    const mX = rPosX + fwdX * 0.11;
-                    const mZ = rPosZ + fwdZ * 0.11;
-                    hitsToProcess.push({
-                        mX, mZ,
-                        hX: mX + fwdX * dU,
-                        hZ: mZ + fwdZ * dU,
-                        dist: dU
                     });
                 }
 
@@ -1642,20 +1626,20 @@
             usDisc.position.set(0, 0.12, -0.6);
             roverMesh.add(usDisc);
 
-            // 2. Dual ToF Beams (Left & Right, angled at ±33°, 10 cm from centre)
+            // 2. Dual ToF Beams (Front 0° & Rear 180°, on chassis centerline)
             const tofGeo = new THREE.CylinderGeometry(0.004, 0.004, 0.5, 8);
             tofGeo.rotateX(-Math.PI / 2);
             tofGeo.translate(0, 0, -0.25);
             const tofMatL = new THREE.MeshBasicMaterial({ color: 0x10b981, transparent: true, opacity: 0.6 });
             tofLRay = new THREE.Mesh(tofGeo, tofMatL);
-            tofLRay.position.set(-0.0545, 0.10, -0.0839);
-            tofLRay.rotation.y = 0.57596; // +33 deg left
+            tofLRay.position.set(0.0, 0.10, -0.110);
+            tofLRay.rotation.y = 0.0;
             roverMesh.add(tofLRay);
 
             const tofMatR = new THREE.MeshBasicMaterial({ color: 0x10b981, transparent: true, opacity: 0.6 });
             tofRRay = new THREE.Mesh(tofGeo.clone(), tofMatR);
-            tofRRay.position.set(0.0545, 0.10, -0.0839);
-            tofRRay.rotation.y = -0.57596; // -33 deg right
+            tofRRay.position.set(0.0, 0.10, 0.100);
+            tofRRay.rotation.y = Math.PI;
             roverMesh.add(tofRRay);
 
             // 3. HLK-LD2402 24GHz Radar ±60° Field of View Cone & Target Indicator
@@ -1948,7 +1932,7 @@
                     if (valPosEl) valPosEl.innerText = `X:${simPosX.toFixed(2)} Y:${(-simPosZ).toFixed(2)}m`;
                     if (hudPosEl) hudPosEl.innerText = `X: ${simPosX.toFixed(2)}m Y: ${(-simPosZ).toFixed(2)}m`;
                     if (hudYawEl) hudYawEl.textContent = `Y:${hdDeg.toFixed(1)}° P:0.0° R:0.0°`;
-                    if (valRangeEl) valRangeEl.innerText = `US:${Math.round(minUsDist * 100)} L:${Math.round(minTofLDist * 100)} R:${Math.round(minTofRDist * 100)}cm`;
+                    if (valRangeEl) valRangeEl.innerText = `Front:${Math.round(minTofLDist * 100)} Rear:${Math.round(minTofRDist * 100)}cm`;
                     const elYaw = document.getElementById('val-yaw');
                     if (elYaw) elYaw.innerText = hdDeg.toFixed(1) + '°';
 
@@ -2059,7 +2043,7 @@
 
             if (valRangeEl) {
                 const tag = (tofLMm === 0 && vTofLMm > 0) ? ' [VIRT]' : '';
-                valRangeEl.innerText = `US:${Math.round(usMm / 10)} L:${Math.round(dispL / 10)} R:${Math.round(dispR / 10)}cm${tag}`;
+                valRangeEl.innerText = `Front:${Math.round(dispL / 10)} Rear:${Math.round(dispR / 10)}cm${tag}`;
             }
 
             // Update Autonomous Navigation Engine State Badge (Dashboard + FPV HUD)
@@ -2096,7 +2080,7 @@
             }
 
             if (fpvSensors) {
-                fpvSensors.innerText = `US:${Math.round(usMm / 10)}cm | L:${Math.round(dispL / 10)}cm | R:${Math.round(dispR / 10)}cm`;
+                fpvSensors.innerText = `Front:${Math.round(dispL / 10)}cm | Rear:${Math.round(dispR / 10)}cm`;
             }
             if (fpvHd) {
                 const yDeg = data.yaw_deg !== undefined ? Number(data.yaw_deg).toFixed(1) : (data.hd !== undefined ? Number(data.hd).toFixed(1) : "--");
@@ -2576,7 +2560,7 @@
                 <span class="badge" style="background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid #38bdf8; font-size: 0.7rem; padding: 2px 8px; border-radius: 4px; font-weight: bold;">MOUNT: FRONT (0°)</span>
             </div>
             <div style="display: flex; align-items: center; gap: 12px; background: rgba(15, 23, 42, 0.75); padding: 4px 12px; border-radius: 6px; border: 1px solid rgba(51, 65, 85, 0.5); font-family: monospace; font-size: 0.72rem; color: #94a3b8;">
-                <span id="fpv-sensors">US: --cm | L: --cm | R: --cm</span>
+                <span id="fpv-sensors">Front: --cm | Rear: --cm</span>
                 <span id="fpv-hd">HD: --°</span>
                 <span id="fpv-keys" style="color: #38bdf8;">WASD / ↑↓←→ Drive | Space Stop | Esc Exit</span>
             </div>

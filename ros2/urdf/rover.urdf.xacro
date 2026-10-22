@@ -12,12 +12,10 @@
 
   <!-- Exact Sensor Geometry Specifications -->
   <!-- Camera: 11 cm from centre at front (0 deg) -->
-  <xacro:property name="cam_dist"     value="0.110" />
-  <!-- ToF: 10 cm from centre, rotated ~33 deg left/right -->
-  <xacro:property name="tof_dist"     value="0.100" />
-  <xacro:property name="tof_yaw_rad"  value="0.57595865" /> <!-- 33.0 degrees -->
-  <xacro:property name="tof_x"        value="${tof_dist * cos(tof_yaw_rad)}" />  <!-- 0.083867m -->
-  <xacro:property name="tof_y"        value="${tof_dist * sin(tof_yaw_rad)}" />  <!-- 0.054464m -->
+  <xacro:property name="cam_dist"        value="0.110" />
+  <!-- Fixed Dual ToF Sensors: Front 0° (+11cm) & Rear 180° (-10cm) -->
+  <xacro:property name="tof_front_dist"  value="0.110" />
+  <xacro:property name="tof_rear_dist"   value="-0.100" />
 
   <!-- Materials -->
   <material name="chassis_dark">
@@ -113,24 +111,8 @@
     <origin xyz="0 0 0" rpy="-1.5707963 0 -1.5707963"/>
   </joint>
 
-  <!-- Front Ultrasonic Sensor Link (11cm from centre at front 0 deg) -->
-  <link name="ultrasonic_link">
-    <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <box size="0.020 0.045 0.020"/>
-      </geometry>
-      <material name="sensor_amber"/>
-    </visual>
-  </link>
-  <joint name="ultrasonic_joint" type="fixed">
-    <parent link="base_link"/>
-    <child link="ultrasonic_link"/>
-    <origin xyz="${cam_dist} 0.0 ${chassis_hgt * 0.40}" rpy="0 0 0"/>
-  </joint>
-
-  <!-- Front-Left ToF Sensor Link (10cm from centre, +33 deg yaw about Z) -->
-  <link name="tof_left_link">
+  <!-- Front ToF Sensor Link (11cm from centre at front 0 deg) -->
+  <link name="tof_front_link">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
@@ -139,14 +121,14 @@
       <material name="accent_cyan"/>
     </visual>
   </link>
-  <joint name="tof_left_joint" type="fixed">
+  <joint name="tof_front_joint" type="fixed">
     <parent link="base_link"/>
-    <child link="tof_left_link"/>
-    <origin xyz="${tof_x} ${tof_y} ${chassis_hgt * 0.40}" rpy="0 0 ${tof_yaw_rad}"/>
+    <child link="tof_front_link"/>
+    <origin xyz="0.110 0.0 0.040" rpy="0 0 0"/>
   </joint>
 
-  <!-- Front-Right ToF Sensor Link (10cm from centre, -33 deg yaw about Z) -->
-  <link name="tof_right_link">
+  <!-- Rear ToF Sensor Link (-10cm from centre at rear 180 deg) -->
+  <link name="tof_rear_link">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
@@ -155,10 +137,10 @@
       <material name="accent_cyan"/>
     </visual>
   </link>
-  <joint name="tof_right_joint" type="fixed">
+  <joint name="tof_rear_joint" type="fixed">
     <parent link="base_link"/>
-    <child link="tof_right_link"/>
-    <origin xyz="${tof_x} -${tof_y} ${chassis_hgt * 0.40}" rpy="0 0 -${tof_yaw_rad}"/>
+    <child link="tof_rear_link"/>
+    <origin xyz="-0.100 0.0 0.040" rpy="0 0 3.14159"/>
   </joint>
 
   <!-- Virtual 2D LaserScan frame for Nav2 obstacle projection -->
