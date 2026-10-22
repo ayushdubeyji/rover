@@ -6,6 +6,7 @@ and odometry gating verification.
 import math
 import struct
 import sys
+import unittest
 from collections import deque
 from pathlib import Path
 
@@ -425,6 +426,39 @@ def test_2mic_stereo_doa_and_radar_disambiguation():
         assert err < 3.0, f"2-mic DOA error {err:.2f}° exceeded 3.0° for target {target_deg}° (expected {expected_deg}°, got {est_deg:.2f}°)"
         assert conf > 0.60, f"Expected high confidence (>0.60) for 2-mic DOA, got {conf:.2f}"
 
+    # Verify active 15° yaw perturbation slew check (radar_presence=None)
+    # Case A: Front-Left (+30°) source disambiguated by +15° yaw slew
+    u30 = np.array([math.cos(math.radians(30.0)), math.sin(math.radians(30.0))])
+    u15 = np.array([math.cos(math.radians(15.0)), math.sin(math.radians(15.0))])
+    audio_f1 = np.stack([
+        np.fft.irfft(specs * np.exp(-1j * 2 * np.pi * freqs * (-float(np.dot(mic_pos[0], u30)) / calc.c)), n=1024),
+        np.fft.irfft(specs * np.exp(-1j * 2 * np.pi * freqs * (-float(np.dot(mic_pos[1], u30)) / calc.c)), n=1024)
+    ])
+    audio_f2 = np.stack([
+        np.fft.irfft(specs * np.exp(-1j * 2 * np.pi * freqs * (-float(np.dot(mic_pos[0], u15)) / calc.c)), n=1024),
+        np.fft.irfft(specs * np.exp(-1j * 2 * np.pi * freqs * (-float(np.dot(mic_pos[1], u15)) / calc.c)), n=1024)
+    ])
+    calc_yaw_f = StereoDoACalculator(sample_rate=16000, n_fft=1024, d_meters=0.055)
+    calc_yaw_f.estimate_azimuth(audio_f1, radar_presence=None, heading_deg=0.0)
+    az_f, _, _ = calc_yaw_f.estimate_azimuth(audio_f2, radar_presence=None, heading_deg=15.0)
+    assert abs(az_f - 15.0) < 3.0, f"Expected Front-Left after yaw check ~15.0°, got {az_f:.2f}°"
+
+    # Case B: Rear-Left (+150°) source disambiguated by +15° yaw slew
+    u150 = np.array([math.cos(math.radians(150.0)), math.sin(math.radians(150.0))])
+    u135 = np.array([math.cos(math.radians(135.0)), math.sin(math.radians(135.0))])
+    audio_r1 = np.stack([
+        np.fft.irfft(specs * np.exp(-1j * 2 * np.pi * freqs * (-float(np.dot(mic_pos[0], u150)) / calc.c)), n=1024),
+        np.fft.irfft(specs * np.exp(-1j * 2 * np.pi * freqs * (-float(np.dot(mic_pos[1], u150)) / calc.c)), n=1024)
+    ])
+    audio_r2 = np.stack([
+        np.fft.irfft(specs * np.exp(-1j * 2 * np.pi * freqs * (-float(np.dot(mic_pos[0], u135)) / calc.c)), n=1024),
+        np.fft.irfft(specs * np.exp(-1j * 2 * np.pi * freqs * (-float(np.dot(mic_pos[1], u135)) / calc.c)), n=1024)
+    ])
+    calc_yaw_r = StereoDoACalculator(sample_rate=16000, n_fft=1024, d_meters=0.055)
+    calc_yaw_r.estimate_azimuth(audio_r1, radar_presence=None, heading_deg=0.0)
+    az_r, _, _ = calc_yaw_r.estimate_azimuth(audio_r2, radar_presence=None, heading_deg=15.0)
+    assert abs(az_r - 135.0) < 3.0, f"Expected Rear-Left after yaw check ~135.0°, got {az_r:.2f}°"
+
     # Also verify full DoASrpPhatNode in 2-mic stereo mode with VAD gating
     node = DoASrpPhatNode(array_mode='2mic_stereo', capture_mode='topic')
     u30 = np.array([math.cos(math.radians(30.0)), math.sin(math.radians(30.0))])
@@ -436,6 +470,19 @@ def test_2mic_stereo_doa_and_radar_disambiguation():
     assert vad_out is True, "VAD should trigger on speech signal"
     assert abs(az_out - 30.0) < 3.0, f"Expected ~30.0 deg from node, got {az_out}"
     assert conf_out > 0.60, f"Expected high confidence, got {conf_out}"
+
+
+class TestRos2Layer(unittest.TestCase):
+    def test_sensor_geometry(self): test_sensor_geometry()
+    def test_tof_projection(self): test_tof_projection()
+    def test_ultrasonic_filter(self): test_ultrasonic_filter()
+    def test_odometry_gating(self): test_odometry_gating()
+    def test_mic_and_radar_geometry(self): test_mic_and_radar_geometry()
+    def test_srp_phat_doa_accuracy_and_unambiguity(self): test_srp_phat_doa_accuracy_and_unambiguity()
+    def test_2mic_stereo_doa_and_radar_disambiguation(self): test_2mic_stereo_doa_and_radar_disambiguation()
+    def test_ld2402_radar_protocol(self): test_ld2402_radar_protocol()
+    def test_voice_follower_fsm_and_ego_noise_gating(self): test_voice_follower_fsm_and_ego_noise_gating()
+    def test_pico_3mic_pio_demux(self): test_pico_3mic_pio_demux()
 
 
 if __name__ == '__main__':

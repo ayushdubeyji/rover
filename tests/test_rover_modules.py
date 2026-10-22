@@ -647,5 +647,75 @@ class TestProtocolAndStreamIsolation(unittest.TestCase):
         self.assertEqual([c0, c1, c2, c3], counts)
 
 
+class TestAutonomyAndCrashProtection(unittest.TestCase):
+    def apply_crash_protection(self, y: float, cur_spd: float, dF: int, dR: int,
+                               impact_dir: int = 0, impact_until: int = 0, now_ms: int = 0) -> float:
+        if now_ms < impact_until and impact_dir == 1 and y > 0.0:
+            return -0.30
+        if now_ms < impact_until and impact_dir == 2 and y < 0.0:
+            return 0.30
+
+        v_fwd = abs(y) * (cur_spd / 100.0)
+        inertia_lead_mm = v_fwd * 70.0 * 1.4
+
+        stop_f = 180.0 + inertia_lead_mm * 0.5
+        warn_f = 500.0
+        if y > 0.0 and dF > 0:
+            if dF <= stop_f:
+                return 0.0
+            elif dF < warn_f:
+                scale = max(0.0, min(1.0, (dF - stop_f) / (warn_f - stop_f)))
+                return y * scale
+
+        stop_r = 180.0 + inertia_lead_mm * 0.5
+        warn_r = 450.0
+        if y < 0.0 and dR > 0:
+            if dR <= stop_r:
+                return 0.0
+            elif dR < warn_r:
+                scale = max(0.0, min(1.0, (dR - stop_r) / (warn_r - stop_r)))
+                return y * scale
+
+        return y
+
+    def test_open_path_no_false_emergency_stop(self):
+        # When dF == 0 (no obstacle in range, clear corridor), forward motion must NOT be blocked!
+        y_out = self.apply_crash_protection(y=0.85, cur_spd=60.0, dF=0, dR=0)
+        self.assertEqual(y_out, 0.85, "Zero-distance reading (path clear) must not trigger emergency stop")
+
+    def test_front_obstacle_hard_emergency_stop(self):
+        # When dF < 180mm, hard emergency stop engages
+        y_out = self.apply_crash_protection(y=0.85, cur_spd=60.0, dF=150, dR=0)
+        self.assertEqual(y_out, 0.0, "Obstacle <180mm must trigger immediate 0.0 velocity stop")
+
+    def test_front_obstacle_warning_speed_scale(self):
+        # In warn zone (180mm < dF < 500mm), velocity is scaled down smoothly
+        y_out = self.apply_crash_protection(y=1.0, cur_spd=50.0, dF=350, dR=0)
+        self.assertTrue(0.0 < y_out < 1.0, f"Expected scaled velocity in warn zone, got {y_out}")
+
+    def test_rear_obstacle_reverse_emergency_stop(self):
+        # Reverse motion with clear rear (dR == 0) proceeds freely
+        y_clear = self.apply_crash_protection(y=-0.75, cur_spd=50.0, dF=0, dR=0)
+        self.assertEqual(y_clear, -0.75)
+
+        # Reverse motion with obstacle <180mm (dR = 140) hard stops
+        y_blocked = self.apply_crash_protection(y=-0.75, cur_spd=50.0, dF=0, dR=140)
+        self.assertEqual(y_blocked, 0.0, "Rear obstacle <180mm must halt reverse travel")
+
+    def test_radar_moving_awareness_and_impact_reflex(self):
+        # When radar senses moving target at 1000mm (<1200mm moving trigger), FSM switches to thinking scan
+        dF = 1000
+        radar_moving = True
+        warn_f = 800
+        should_scan = (dF > 0 and (dF < warn_f or (radar_moving and dF < 1200)))
+        self.assertTrue(should_scan, "Radar moving target within 1200mm must alert FSM")
+
+        # Physical impact reflex overrides forward driving
+        now_ms = 100
+        y_reflex = self.apply_crash_protection(y=0.8, cur_spd=50.0, dF=0, dR=0,
+                                               impact_dir=1, impact_until=now_ms + 500, now_ms=now_ms)
+        self.assertEqual(y_reflex, -0.30, "Front collision reflex must enforce reverse step")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -274,12 +274,16 @@ class StereoDoACalculator:
         # Steering matrix for 2-channel cross power:
         phase = -2.0 * np.pi * np.outer(tau_total, self.active_freqs)
         self.steering_exp = np.exp(1j * phase)  # Shape: (181, n_bins)
+        # History for active yaw slew disambiguation (d(theta_raw) / d(psi))
+        self.prev_raw_deg: Optional[float] = None
+        self.prev_heading_deg: Optional[float] = None
 
     def estimate_azimuth(
         self,
         audio_2ch: np.ndarray,
-        radar_presence: bool = True,
-        yaw_rate: float = 0.0
+        radar_presence: Optional[bool] = None,
+        yaw_rate: float = 0.0,
+        heading_deg: Optional[float] = None
     ) -> Tuple[float, float, np.ndarray]:
         """
         Estimates full 360-degree azimuth [-180, +180] deg using 2-mic stereo + radar disambiguation.
@@ -325,10 +329,35 @@ class StereoDoACalculator:
         conf = (srp_max - srp_mean) / dynamic_range if dynamic_range > 1e-6 else 0.0
         conf = max(0.0, min(1.0, conf * 1.5))
 
-        # Front / Rear Disambiguation
-        is_front = bool(radar_presence)
-        if abs(yaw_rate) > 0.05:
-            pass
+        # Front / Rear Disambiguation:
+        # 1. Forward radar presence cone (+/-60 deg) takes priority when explicitly provided
+        if radar_presence is True:
+            is_front = True
+        elif radar_presence is False and (heading_deg is None and abs(yaw_rate) < 0.05):
+            is_front = False
+        else:
+            # 2. Active 15 deg yaw perturbation check: d(theta_raw) / d(psi)
+            # Front source: d(theta_raw) / d(psi) < 0 (apparent bearing opposes rover turn)
+            # Rear source:  d(theta_raw) / d(psi) > 0 (apparent bearing matches rover turn)
+            is_front = True if radar_presence is None else bool(radar_presence)
+            if heading_deg is not None and self.prev_heading_deg is not None and self.prev_raw_deg is not None:
+                delta_psi = (heading_deg - self.prev_heading_deg + 180.0) % 360.0 - 180.0
+                if abs(delta_psi) >= 2.0:
+                    delta_raw = raw_deg - self.prev_raw_deg
+                    if delta_psi * delta_raw > 0:
+                        is_front = False
+                    else:
+                        is_front = True
+            elif abs(yaw_rate) > 0.05 and self.prev_raw_deg is not None:
+                delta_raw = raw_deg - self.prev_raw_deg
+                if yaw_rate * delta_raw > 0:
+                    is_front = False
+                else:
+                    is_front = True
+
+        self.prev_raw_deg = raw_deg
+        if heading_deg is not None:
+            self.prev_heading_deg = heading_deg
 
         if is_front:
             azimuth_final = raw_deg
@@ -525,7 +554,9 @@ class DoASrpPhatNode(Node):
     def process_audio_buffer(
         self,
         audio_data: np.ndarray,
-        radar_presence: Optional[bool] = None
+        radar_presence: Optional[bool] = None,
+        yaw_rate: float = 0.0,
+        heading_deg: Optional[float] = None
     ) -> Tuple[float, float, bool]:
         """
         Processes audio block (channels x N or N x channels), checks VAD, and computes DOA.
@@ -549,7 +580,9 @@ class DoASrpPhatNode(Node):
             r_pres = False
 
         if self.array_mode == '2mic_stereo':
-            azimuth, conf, _ = self.calculator.estimate_azimuth(audio_data[:2], radar_presence=r_pres)
+            azimuth, conf, _ = self.calculator.estimate_azimuth(
+                audio_data[:2], radar_presence=r_pres, yaw_rate=yaw_rate, heading_deg=heading_deg
+            )
         else:
             azimuth, conf, _ = self.calculator.estimate_azimuth(audio_data[:3])
 

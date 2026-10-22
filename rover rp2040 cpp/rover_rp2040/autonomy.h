@@ -114,7 +114,7 @@ public:
     // Front Crash Protection: <180 mm hard emergency stop, warn up to 500 mm
     float stopF = 180.0f + inertiaLeadMm * 0.5f;
     float warnF = 500.0f;
-    if (y > 0.0f) {
+    if (y > 0.0f && dF > 0) {
       if (dF <= stopF) {
         y = 0.0f; // Hard crash stop
       } else if (dF < warnF) {
@@ -126,7 +126,7 @@ public:
     // Rear Crash Protection: <180 mm hard emergency stop, warn up to 450 mm
     float stopR = 180.0f + inertiaLeadMm * 0.5f;
     float warnR = 450.0f;
-    if (y < 0.0f) {
+    if (y < 0.0f && dR > 0) {
       if (dR <= stopR) {
         y = 0.0f; // Hard crash stop in reverse
       } else if (dR < warnR) {
@@ -155,7 +155,7 @@ public:
     // Stuck & Trap Evaluation
     uint16_t STOP_F = 350;
     uint16_t WARN_F = 800;
-    bool isBoxedIn = (dF < STOP_F);
+    bool isBoxedIn = (dF > 0 && dF < STOP_F);
 
     // Oscillation Trap: 3 turns within 6s or <12cm progress in 3.0s
     bool isOscillationTrap = false;
@@ -176,7 +176,7 @@ public:
     // Range-rate Stall & IMU Jerk Discrepancy:
     // Commanded forward motion while range does not change and high jerk or zero delta
     bool isStall = false;
-    if (fabsf(out_y) > 0.35f) {
+    if (fabsf(out_y) > 0.35f && dF > 0) {
       if (abs((int)dF - (int)prevDF) < 12) {
         if (stallStartMs == 0) stallStartMs = now_ms;
         else if (now_ms - stallStartMs > 900) isStall = true;
@@ -206,7 +206,7 @@ public:
 
     switch (autoState) {
       case AUTO_CRUISE_CLEAR: { // State 0: Corridor clear forward cruise
-        if (dF < WARN_F || (radar_moving && dF < 1200)) {
+        if (dF > 0 && (dF < WARN_F || (radar_moving && dF < 1200))) {
           autoState = AUTO_THINKING_SCAN;
           autoStateStart = now_ms;
           autoStateUntil = now_ms + 180;
@@ -222,10 +222,10 @@ public:
       case AUTO_THINKING_SCAN: { // State 1: Brief scan evaluating polar histogram
         out_y = 0.20f; out_z = 0.0f;
         if (now_ms >= autoStateUntil) {
-          if (dF < STOP_F) {
+          if (dF > 0 && dF < STOP_F) {
             autoState = AUTO_PLANNING_PATH;
             autoPhaseSwitched = true;
-          } else if (dF <= WARN_F) {
+          } else if (dF > 0 && dF <= WARN_F) {
             autoState = AUTO_CAUTIOUS_CREEP;
             autoPhaseSwitched = true;
           } else {
@@ -262,10 +262,10 @@ public:
       case AUTO_VEER_LEFT: { // State 3: Proportional left arc
         out_z = 0.45f;
         out_y = 0.70f;
-        if (dF > 600) {
+        if (dF == 0 || dF > 600) {
           autoState = AUTO_CRUISE_CLEAR;
           autoPhaseSwitched = true;
-        } else if (dF < 280) {
+        } else if (dF > 0 && dF < 280) {
           autoState = AUTO_THINKING_SCAN;
           autoStateStart = now_ms;
           autoStateUntil = now_ms + 180;
@@ -277,10 +277,10 @@ public:
       case AUTO_VEER_RIGHT: { // State 4: Proportional right arc
         out_z = -0.45f;
         out_y = 0.70f;
-        if (dF > 600) {
+        if (dF == 0 || dF > 600) {
           autoState = AUTO_CRUISE_CLEAR;
           autoPhaseSwitched = true;
-        } else if (dF < 280) {
+        } else if (dF > 0 && dF < 280) {
           autoState = AUTO_THINKING_SCAN;
           autoStateStart = now_ms;
           autoStateUntil = now_ms + 180;
@@ -293,10 +293,10 @@ public:
         out_y = 0.40f;
         out_z = 0.0f;
         out_spd = constrain(out_spd * 0.70f, 15.0f, 40.0f);
-        if (dF > 600) {
+        if (dF == 0 || dF > 600) {
           autoState = AUTO_CRUISE_CLEAR;
           autoPhaseSwitched = true;
-        } else if (dF < 260) {
+        } else if (dF > 0 && dF < 260) {
           autoState = AUTO_PLANNING_PATH;
           autoPhaseSwitched = true;
         }
@@ -324,8 +324,8 @@ public:
         out_y = -0.80f;
         out_z = -0.15f * (float)autoEscapeDir;
         out_spd = constrain(out_spd * 1.15f, 25.0f, 90.0f);
-        bool clearanceOpen = (now_ms - autoStateStart >= 400) && (dF > 450);
-        bool rearBlocked = (dR < 180);
+        bool clearanceOpen = (now_ms - autoStateStart >= 400) && (dF == 0 || dF > 450);
+        bool rearBlocked = (dR > 0 && dR < 180);
         if (now_ms >= autoStateUntil || clearanceOpen || rearBlocked) {
           autoState = AUTO_PLANNING_PATH;
           autoPhaseSwitched = true;
@@ -337,7 +337,7 @@ public:
         out_y = -0.80f;
         out_z = -0.70f * (float)autoEscapeDir;
         out_spd = constrain(out_spd * 1.15f, 25.0f, 90.0f);
-        bool rearBlocked = (dR < 180);
+        bool rearBlocked = (dR > 0 && dR < 180);
         if (now_ms >= autoStateUntil || rearBlocked) {
           autoState = AUTO_PLANNING_PATH;
           autoPhaseSwitched = true;
@@ -362,7 +362,7 @@ public:
       case AUTO_WALL_FOLLOW: { // State 10: Parallel wall contour
         out_y = 0.70f;
         out_z = 0.0f;
-        if (dF < 450) {
+        if (dF > 0 && dF < 450) {
           autoState = AUTO_THINKING_SCAN;
           autoStateStart = now_ms;
           autoStateUntil = now_ms + 180;

@@ -206,8 +206,8 @@ void update_led_state_machine(uint32_t now_ms) {
 
   // --- Manual Mode: Dim Ice Blue (#38BDF8) Constant Gentle Glow ---
   if (!is_auto) {
-    // #38BDF8 = (56, 189, 248), scaled to gentle 25% level
-    set_all_leds(color_rgb(14, 47, 62));
+    // #38BDF8 = (56, 189, 248), hardware brightness capped at 70 (~27%)
+    set_all_leds(color_rgb(56, 189, 248));
     strip.show();
     return;
   }
@@ -230,6 +230,16 @@ void update_led_state_machine(uint32_t now_ms) {
     // 1: Thinking Scan - Warm Amber Chase (#FFB700)
     case AUTO_THINKING_SCAN: {
       strip.clear();
+#if LED_LAYOUT_LATERAL_RUNNERS
+      uint8_t head = (now_ms / 35) % 20;
+      for (int i = 0; i < 6; i++) {
+        int idx = (head - i + 20) % 20;
+        uint8_t fade = 255 - (i * 40);
+        uint32_t c = color_rgb((255 * fade) / 255, (183 * fade) / 255, 0);
+        strip.setPixelColor(idx, c);
+        strip.setPixelColor(20 + idx, c);
+      }
+#else
       uint8_t head = (now_ms / 35) % STATUS_LED_COUNT;
       for (int i = 0; i < 6; i++) {
         int idx = (head - i + STATUS_LED_COUNT) % STATUS_LED_COUNT;
@@ -238,12 +248,25 @@ void update_led_state_machine(uint32_t now_ms) {
         uint8_t g = (183 * fade) / 255;
         strip.setPixelColor(idx, color_rgb(r, g, 0));
       }
+#endif
       break;
     }
 
     // 2: Planning Path - Electric Blue Split Wave (#0088FF)
     case AUTO_PLANNING_PATH: {
       strip.clear();
+#if LED_LAYOUT_LATERAL_RUNNERS
+      uint8_t wave_pos = (now_ms / 35) % 20;
+      for (int i = 0; i < 20; i++) {
+        int dist = abs(i - (int)wave_pos);
+        if (dist < 4) {
+          uint8_t bright = 255 - (dist * 60);
+          uint32_t c = color_rgb(0, (136 * bright) / 255, (255 * bright) / 255);
+          strip.setPixelColor(i, c);
+          strip.setPixelColor(20 + i, c);
+        }
+      }
+#else
       int half = STATUS_LED_COUNT / 2;
       uint8_t wave_pos = (now_ms / 40) % half;
       for (int i = 0; i < half; i++) {
@@ -255,6 +278,7 @@ void update_led_state_machine(uint32_t now_ms) {
           strip.setPixelColor(STATUS_LED_COUNT - 1 - i, c);
         }
       }
+#endif
       break;
     }
 
@@ -337,12 +361,23 @@ void update_led_state_machine(uint32_t now_ms) {
     // 7: Reverse Backtrack - Magenta (#FF0088) Reverse Flow
     case AUTO_REVERSE_BACKTRACK: {
       strip.clear();
+#if LED_LAYOUT_LATERAL_RUNNERS
+      uint8_t head = 19 - ((now_ms / 35) % 20);
+      for (int i = 0; i < 6; i++) {
+        int idx = (head + i) % 20;
+        uint8_t fade = 255 - (i * 40);
+        uint32_t c = color_rgb((255 * fade) / 255, 0, (136 * fade) / 255);
+        strip.setPixelColor(idx, c);
+        strip.setPixelColor(20 + idx, c);
+      }
+#else
       uint8_t head = (STATUS_LED_COUNT - 1) - ((now_ms / 40) % STATUS_LED_COUNT);
       for (int i = 0; i < 7; i++) {
         int idx = (head + i) % STATUS_LED_COUNT;
         uint8_t fade = 255 - (i * 35);
         strip.setPixelColor(idx, color_rgb((255 * fade) / 255, 0, (136 * fade) / 255));
       }
+#endif
       break;
     }
 
@@ -361,11 +396,21 @@ void update_led_state_machine(uint32_t now_ms) {
     // 9: Compass Pivot - Amber Orbit Spin (#FFB700)
     case AUTO_COMPASS_PIVOT: {
       strip.clear();
+#if LED_LAYOUT_LATERAL_RUNNERS
+      uint8_t head = (now_ms / 25) % 20;
+      for (int i = 0; i < 5; i++) {
+        int idx_l = (head - i + 20) % 20;
+        int idx_r = (19 - ((head - i + 20) % 20));
+        strip.setPixelColor(idx_l, color_rgb(255, 183, 0));
+        strip.setPixelColor(20 + idx_r, color_rgb(255, 183, 0));
+      }
+#else
       uint8_t head = (now_ms / 25) % STATUS_LED_COUNT;
       for (int i = 0; i < 5; i++) {
         int idx = (head - i + STATUS_LED_COUNT) % STATUS_LED_COUNT;
         strip.setPixelColor(idx, color_rgb(255, 183, 0));
       }
+#endif
       break;
     }
 
@@ -459,21 +504,23 @@ void loop() {
   }
 
   // 2. Optional Encoder Telemetry Dispatch (20 Hz)
-#if ENABLE_C3_ENCODERS
   static uint32_t last_enc_ms = 0;
   if (now - last_enc_ms >= 50) {
     last_enc_ms = now;
     EncoderPkt epkt = {};
+#if ENABLE_C3_ENCODERS
     epkt.valid_mask = 0x0F;
     epkt.enc_count[0] = enc_counts[0];
     epkt.enc_count[1] = enc_counts[1];
     epkt.enc_count[2] = enc_counts[2];
     epkt.enc_count[3] = enc_counts[3];
+#else
+    epkt.valid_mask = 0x00; // Disabled by default
+#endif
     size_t f_len = rover_pack_frame(MSG_ENCODER, &epkt, sizeof(EncoderPkt),
                                     tx_frame_buf, sizeof(tx_frame_buf));
     if (f_len > 0) SerialRP.write(tx_frame_buf, f_len);
   }
-#endif
 
   // 3. WS2812 LED State Machine Ticker (30 Hz)
   static uint32_t last_led_ms = 0;

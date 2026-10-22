@@ -180,6 +180,10 @@ void handle_binary_frame(uint8_t msg_type, const uint8_t *payload, uint8_t len) 
     shared_cmd.cfg_accel = (float)cfg.accel / 10.0f;
     shared_cmd.cfg_spin_ms = cfg.spin_ms;
     mutex_exit(&data_mutex);
+  } else if (msg_type == MSG_ENCODER && len >= sizeof(EncoderPkt)) {
+    EncoderPkt enc;
+    memcpy(&enc, payload, sizeof(EncoderPkt));
+    // Optional wheel pulse counts from C3 bridge (valid_mask == 0 when disabled by default)
   }
 }
 
@@ -370,7 +374,11 @@ void loop() {
           motors.stopAll();
         }
       } else {
-        motors.setDrive(drive_x, drive_y, drive_z, drive_spd);
+        if (remote_alive) {
+          motors.setDrive(drive_x, drive_y, drive_z, drive_spd);
+        } else {
+          motors.stopAll();
+        }
       }
     }
 
@@ -480,18 +488,24 @@ void loop1() {
     }
   }
 
-  // 4. Periodic 5 Hz ASCII Telemetry on USB CDC Serial Monitor
+  // 4. Periodic 5 Hz ASCII Telemetry on USB CDC and Serial2 (Pi 3B+ Fallback)
   if (now - last_ascii_tel_ms >= 200) {
     last_ascii_tel_ms = now;
-    if (Serial) {
-      mutex_enter_blocking(&data_mutex);
-      Serial.printf("T,%d,%d,%d,%d,bat:%umV,tof:[%u,%u],pos:[%d,%d],hd:%.1f,jerk:%.2f\n",
-                    shared_telem.wheelMmS[0] / 10, shared_telem.wheelMmS[1] / 10,
-                    shared_telem.wheelMmS[2] / 10, shared_telem.wheelMmS[3] / 10,
-                    shared_telem.batMv, shared_telem.tofMm[0], shared_telem.tofMm[1],
-                    shared_telem.posCm[0], shared_telem.posCm[1],
-                    shared_heading, shared_dynJerk);
-      mutex_exit(&data_mutex);
+    mutex_enter_blocking(&data_mutex);
+    float hd = shared_heading;
+    uint16_t tf = shared_telem.tofMm[0];
+    uint16_t tr = shared_telem.tofMm[1];
+    uint16_t st = shared_telem.batMv;
+    mutex_exit(&data_mutex);
+
+    // Standard R,<hdg>,<uMm>,<tof_front>,<tof_rear>,<mode>\n legacy format
+    char r_line[64];
+    int r_len = snprintf(r_line, sizeof(r_line), "R,%.2f,0,%u,%u,%d\n", hd, tf, tr, (int)st);
+    if (r_len > 0) {
+      Serial2.write((const uint8_t *)r_line, r_len);
+      if (Serial) {
+        Serial.write((const uint8_t *)r_line, r_len);
+      }
     }
   }
 }
