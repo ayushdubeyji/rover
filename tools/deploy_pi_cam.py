@@ -7,7 +7,7 @@ import paramiko
 
 HOST = '192.168.0.103'
 USER = 'ayush'
-PASS = 'REMOVED'
+PASS = os.environ.get('PI_PASSWORD') or os.environ.get('SSH_PASSWORD')
 CPP_LOCAL = os.path.join(os.path.dirname(__file__), '..', 'pi_cam', 'pi_cam_node.cpp')
 REMOTE_DIR = '/home/ayush/rover_cam'
 REMOTE_CPP = '/home/ayush/rover_cam/pi_cam_node.cpp'
@@ -63,7 +63,19 @@ def deploy():
     print("[*] Connecting via SSH...")
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(HOST, username=USER, password=PASS, timeout=10, allow_agent=False, look_for_keys=False)
+    key_path = os.path.expanduser('~/.ssh/id_ed25519')
+    try:
+        if os.path.exists(key_path):
+            client.connect(HOST, username=USER, key_filename=key_path, timeout=10)
+        elif PASS:
+            client.connect(HOST, username=USER, password=PASS, timeout=10, allow_agent=False, look_for_keys=False)
+        else:
+            client.connect(HOST, username=USER, timeout=10)
+    except Exception:
+        if PASS:
+            client.connect(HOST, username=USER, password=PASS, timeout=10, allow_agent=False, look_for_keys=False)
+        else:
+            raise
 
     print(f"[*] Uploading {CPP_LOCAL} to {REMOTE_CPP}...")
     sftp = client.open_sftp()

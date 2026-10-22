@@ -89,13 +89,21 @@
 #include <IRremoteESP8266.h>
 #include <IRsend.h>
 
+#if __has_include("secrets.h")
+#include "secrets.h"
+#else
+#include "secrets.example.h"
+#endif
+
 // ============================= IR TRANSMITTER ================================
 #define IR_TX_PIN         21
 // Haier TV power code — confirmed captured from the original remote as SAMSUNG protocol, 32-bit
 #define HAIER_POWER_CODE 0x1818D02FUL
 IRsend irSend(IR_TX_PIN);
 
-#define OTA_PASSWORD     "REMOVED"
+#ifndef OTA_PASSWORD
+#define OTA_PASSWORD     "YOUR_OTA_PASSWORD"
+#endif
 #define FIRMWARE_VERSION "2.1.0"
 
 // ============================= LIMITS / SIZES ===============================
@@ -490,10 +498,10 @@ void setDefaultConfig() {
   memset(&cfg,0,sizeof(cfg));
   cfg.magic=CONFIG_MAGIC; cfg.version=CONFIG_VERSION;
   cfg.outputMode=MODE_BLE_KEYBOARD;
-  strlcpy(cfg.staSsid,"REMOVED",sizeof(cfg.staSsid));
-  strlcpy(cfg.staPass,"REMOVED",sizeof(cfg.staPass));
-  strlcpy(cfg.apSsid,"Keypad-Setup",sizeof(cfg.apSsid));
-  strlcpy(cfg.apPass,"REMOVED",sizeof(cfg.apPass));
+  strlcpy(cfg.staSsid,STA_SSID,sizeof(cfg.staSsid));
+  strlcpy(cfg.staPass,STA_PASS,sizeof(cfg.staPass));
+  strlcpy(cfg.apSsid,AP_SSID,sizeof(cfg.apSsid));
+  strlcpy(cfg.apPass,AP_PASS,sizeof(cfg.apPass));
   strlcpy(cfg.adminPass,"",sizeof(cfg.adminPass));
 
   cfg.padDebounceMs=15;

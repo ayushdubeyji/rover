@@ -29,8 +29,14 @@ struct Axis { float v, a; };
 #define MAG_MAP_Z ((float)rz)
 #endif
 
-const char* ssid = "REMOVED";
-const char* password = "REMOVED";
+#if __has_include("secrets.h")
+#include "secrets.h"
+#else
+#include "secrets.example.h"
+#endif
+
+const char* ssid = WIFI_SSID;
+const char* password = WIFI_PASSWORD;
 
 WebServer server(80);
 Preferences prefs;
